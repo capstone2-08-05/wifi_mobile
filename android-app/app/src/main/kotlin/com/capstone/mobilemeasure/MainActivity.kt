@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -30,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.capstone.mobilemeasure.dev.DevMeasureScreen
+import com.capstone.mobilemeasure.dev.DevMeasurementViewModel
 import com.capstone.mobilemeasure.permission.PermissionHelper
 import com.capstone.mobilemeasure.ui.DebugLogScreen
 import com.capstone.mobilemeasure.ui.MeasureScreen
@@ -37,11 +40,12 @@ import com.capstone.mobilemeasure.ui.MeasureScreen
 private val ScreenBg = Color(0xFFF6F7FB)
 private val Ink = Color(0xFF111827)
 
-private enum class Screen { Measure, DebugLog }
+private enum class Screen { Measure, DebugLog, DevApi }
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
+    private val devViewModel: DevMeasurementViewModel by viewModels()
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -56,7 +60,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                AppRoot(viewModel)
+                AppRoot(viewModel, devViewModel)
             }
         }
     }
@@ -64,8 +68,9 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppRoot(viewModel: MainViewModel) {
+private fun AppRoot(viewModel: MainViewModel, devViewModel: DevMeasurementViewModel) {
     val state by viewModel.state.collectAsState()
+    val devState by devViewModel.state.collectAsState()
     var screen by rememberSaveable { mutableStateOf(Screen.Measure) }
 
     Scaffold(
@@ -76,6 +81,7 @@ private fun AppRoot(viewModel: MainViewModel) {
                         text = when (screen) {
                             Screen.Measure -> "실측 데이터 수집"
                             Screen.DebugLog -> "디버그 로그"
+                            Screen.DevApi -> "Dev: Measurement API"
                         },
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 18.sp,
@@ -83,7 +89,7 @@ private fun AppRoot(viewModel: MainViewModel) {
                     )
                 },
                 navigationIcon = {
-                    if (screen == Screen.DebugLog) {
+                    if (screen != Screen.Measure) {
                         IconButton(onClick = { screen = Screen.Measure }) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
@@ -95,6 +101,13 @@ private fun AppRoot(viewModel: MainViewModel) {
                 },
                 actions = {
                     if (screen == Screen.Measure) {
+                        IconButton(onClick = { screen = Screen.DevApi }) {
+                            Icon(
+                                Icons.Filled.Build,
+                                contentDescription = "Dev API",
+                                tint = Ink,
+                            )
+                        }
                         IconButton(onClick = { screen = Screen.DebugLog }) {
                             Icon(
                                 Icons.Filled.BugReport,
@@ -126,6 +139,13 @@ private fun AppRoot(viewModel: MainViewModel) {
                     onUpload = viewModel::onUploadRequested,
                 )
                 Screen.DebugLog -> DebugLogScreen(logs = state.recentLogs)
+                Screen.DevApi -> DevMeasureScreen(
+                    state = devState,
+                    onTokenChange = devViewModel::onTokenChange,
+                    onFetchContext = devViewModel::fetchContext,
+                    onCreateSession = devViewModel::createSession,
+                    onClear = devViewModel::clear,
+                )
             }
         }
     }
