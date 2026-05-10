@@ -90,15 +90,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         session = newSession
         scanner = newScanner
 
-        val apiSession = ActiveMeasurementSession.current
+        val heldSession = ActiveMeasurementSession.current
+        val apiSession = ActiveMeasurementSession.activeOrNull()
         activeApiSessionId = apiSession?.id
         pointBuffer.clear()
         stepIndex = 0
 
-        if (apiSession == null) {
-            appendLog("API 세션 없음 — 서버 업로드 비활성, CSV만 저장")
-        } else {
-            appendLog("API 세션 활성: ${apiSession.id} (status=${apiSession.status})")
+        when {
+            heldSession == null ->
+                appendLog("API 세션 없음 — 서버 업로드 비활성, CSV만 저장")
+            apiSession == null ->
+                appendLog(
+                    "API 세션 ${heldSession.id}는 이미 완료됨 — 서버 업로드 비활성, " +
+                        "Dev에서 새 세션을 만들어야 다시 업로드 가능"
+                )
+            else ->
+                appendLog("API 세션 활성: ${apiSession.id} (status=${apiSession.status})")
         }
 
         appendLog("session start: ${newSession.sessionId}")
