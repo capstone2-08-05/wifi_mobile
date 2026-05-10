@@ -7,6 +7,7 @@ import com.capstone.mobilemeasure.data.remote.dto.MeasureContextDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasurementCompleteResponseDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasurementSessionResponseDto
 import com.capstone.mobilemeasure.data.remote.dto.UploadMeasurementPointsRequest
+import com.capstone.mobilemeasure.data.remote.dto.UploadMeasurementPointsResponseDto
 
 class MeasurementRepository(
     private val api: MeasurementApi
@@ -24,8 +25,8 @@ class MeasurementRepository(
     suspend fun uploadPoints(
         sessionId: String,
         request: UploadMeasurementPointsRequest
-    ): Result<Int> = runCatching {
-        api.uploadMeasurementPoints(sessionId = sessionId, request = request).inserted
+    ): Result<UploadMeasurementPointsResponseDto> = runCatching {
+        api.uploadMeasurementPoints(sessionId = sessionId, request = request)
     }
 
     suspend fun completeSession(

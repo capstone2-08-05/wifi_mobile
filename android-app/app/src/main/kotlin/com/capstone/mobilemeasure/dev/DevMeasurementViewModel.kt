@@ -13,6 +13,7 @@ import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasureContextDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasurementSessionResponseDto
 import com.capstone.mobilemeasure.data.repository.MeasurementRepository
+import com.capstone.mobilemeasure.data.session.ActiveMeasurementSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -112,6 +113,7 @@ class DevMeasurementViewModel(app: Application) : AndroidViewModel(app) {
                     appendLog(
                         "session ok: id=${sess.id} status=${sess.status} type=${sess.measurementType}"
                     )
+                    ActiveMeasurementSession.publish(sess)
                     _state.update {
                         it.copy(
                             isCreatingSession = false,
@@ -133,6 +135,7 @@ class DevMeasurementViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clear() {
+        ActiveMeasurementSession.clear()
         _state.update {
             it.copy(
                 context = null,
