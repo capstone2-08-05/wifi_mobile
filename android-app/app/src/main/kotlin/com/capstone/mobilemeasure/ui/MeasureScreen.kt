@@ -80,6 +80,8 @@ fun MeasureScreen(
 
         MetricsRow(state)
 
+        ApiUploadStatusCard(state)
+
         ActionRow(
             isMeasuring = state.isMeasuring,
             canUpload = state.sessionId != null,
@@ -92,6 +94,48 @@ fun MeasureScreen(
             MarkIssueLink(onMarkIssue)
         } else {
             Spacer(Modifier.height(0.dp))
+        }
+    }
+}
+
+@Composable
+private fun ApiUploadStatusCard(state: MeasureUiState) {
+    val sessionLabel = state.apiSessionId?.let { "API 세션 $it" } ?: "API 세션 없음 (Dev API에서 생성)"
+    val countsLabel = "전송 ${state.serverPointsTotal} · 대기 ${state.pendingBufferSize}"
+    val statusLabel = when {
+        state.sessionCompleted -> "완료됨"
+        state.isCompleting -> "완료 처리 중…"
+        state.isUploadingPoints -> "업로드 중…"
+        state.apiSessionId == null -> "—"
+        else -> "대기 중"
+    }
+    val detailLabel = state.completionSummary ?: state.lastUploadInfo
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, DividerGrey),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(text = sessionLabel, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = countsLabel, color = Subdued, fontSize = 12.sp)
+                Text(text = statusLabel, color = Subdued, fontSize = 12.sp)
+            }
+            detailLabel?.let {
+                Text(text = it, color = Subdued, fontSize = 11.sp)
+            }
         }
     }
 }
