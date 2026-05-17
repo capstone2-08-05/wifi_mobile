@@ -1,6 +1,7 @@
 package com.capstone.mobilemeasure.dev
 
 import android.app.Application
+import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -9,10 +10,11 @@ import com.capstone.mobilemeasure.data.remote.NetworkClient
 import com.capstone.mobilemeasure.data.remote.dto.CalibrationDto
 import com.capstone.mobilemeasure.data.remote.dto.CreateMeasurementSessionRequest
 import com.capstone.mobilemeasure.data.remote.dto.DeviceInfoDto
-import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasureContextDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasurementSessionResponseDto
 import com.capstone.mobilemeasure.data.repository.MeasurementRepository
+import com.capstone.mobilemeasure.data.session.ActiveCalibration
+import com.capstone.mobilemeasure.data.session.ActiveMeasureContext
 import com.capstone.mobilemeasure.data.session.ActiveMeasurementSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +43,54 @@ class DevMeasurementViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(token = token, errorMessage = null) }
     }
 
+    /** QR 스캔 결과 처리: rawValue에서 token을 추출 → 입력 필드에 채우고 context 조회. */
+    fun onScannedToken(rawValue: String) {
+        val token = parseTokenFromQr(rawValue)
+        if (token.isNullOrBlank()) {
+            appendLog("QR 파싱 실패: $rawValue")
+            _state.update { it.copy(errorMessage = "QR에서 token을 찾지 못함: $rawValue") }
+            return
+        }
+        appendLog("QR 스캔: token=$token")
+        _state.update { it.copy(token = token, errorMessage = null) }
+        fetchContext()
+    }
+
+    fun onScanError(message: String) {
+        appendLog("QR 스캔 오류: $message")
+        _state.update { it.copy(errorMessage = "QR 스캔 실패: $message") }
+    }
+
+    fun onScanInstallProgress(message: String) {
+        appendLog("QR: $message")
+    }
+
+    /**
+     * QR raw 값에서 token 추출. 허용 포맷:
+     *   - 그대로 token 문자열
+     *   - URL 쿼리 `?token=...`
+     *   - URL path의 마지막 segment (예: `https://.../measure/<token>`)
+     *   - deep link `mobilemeasure://measure?token=...`
+     */
+    private fun parseTokenFromQr(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+        return try {
+            val uri = Uri.parse(trimmed)
+            val hasScheme = !uri.scheme.isNullOrBlank()
+            val hasHostOrPath = !uri.host.isNullOrBlank() || !uri.path.isNullOrBlank()
+            if (hasScheme && hasHostOrPath) {
+                uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }
+                    ?: uri.lastPathSegment?.takeIf { it.isNotBlank() }
+                    ?: trimmed
+            } else {
+                trimmed
+            }
+        } catch (_: Exception) {
+            trimmed
+        }
+    }
+
     fun fetchContext() {
         val token = _state.value.token.trim()
         if (token.isEmpty()) {
@@ -60,6 +110,7 @@ class DevMeasurementViewModel(app: Application) : AndroidViewModel(app) {
                             "scene=${ctx.sceneVersionId} asset=${ctx.assetId} " +
                             "floorplan=${ctx.floorplan.url}"
                     )
+                    ActiveMeasureContext.publish(ctx)
                     _state.update {
                         it.copy(
                             isFetchingContext = false,
@@ -89,6 +140,21 @@ class DevMeasurementViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (_state.value.isCreatingSession) return
 
+        // calibration이 설정되지 않은 상태에서 session을 만들면 잘못된 시작 좌표가
+        // 서버에 저장돼서 분석 단계까지 오염된다. 측정 화면에서 도면 위 시작 위치 +
+        // heading을 먼저 입력해야 session 생성을 허용한다.
+        val draft = ActiveCalibration.current
+        if (draft == null) {
+            val msg = "calibration 미설정 — 측정 화면에서 시작 위치/heading을 먼저 입력하세요"
+            appendLog("session 생성 거부: $msg")
+            _state.update { it.copy(errorMessage = msg) }
+            return
+        }
+        val calibration = CalibrationDto(
+            method = "manual_start_point",
+            startFloorPosition = draft.toStartFloorPositionDto(),
+            initialHeadingDeg = draft.initialHeadingDeg,
+        )
         val request = CreateMeasurementSessionRequest(
             measurementLinkToken = token,
             measurementType = "rssi",
@@ -97,15 +163,15 @@ class DevMeasurementViewModel(app: Application) : AndroidViewModel(app) {
                 os = "Android ${Build.VERSION.RELEASE}",
                 appVersion = BuildConfig.VERSION_NAME,
             ),
-            calibration = CalibrationDto(
-                method = "manual_start_point",
-                startFloorPosition = FloorPositionDto(x = 0.0, y = 0.0, z = 1.2),
-                initialHeadingDeg = 0.0,
-            ),
+            calibration = calibration,
         )
 
         _state.update { it.copy(isCreatingSession = true, errorMessage = null) }
-        appendLog("POST /measurement-sessions (token=$token)")
+        appendLog(
+            "POST /measurement-sessions (token=$token) " +
+                "cal=start(${calibration.startFloorPosition?.x},${calibration.startFloorPosition?.y}) " +
+                "h=${calibration.initialHeadingDeg}"
+        )
 
         viewModelScope.launch {
             repository.createSession(request).fold(
@@ -136,6 +202,7 @@ class DevMeasurementViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clear() {
         ActiveMeasurementSession.clear()
+        ActiveMeasureContext.clear()
         _state.update {
             it.copy(
                 context = null,

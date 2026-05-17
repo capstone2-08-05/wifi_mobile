@@ -27,17 +27,25 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.capstone.mobilemeasure.CalibrationInputState
 import com.capstone.mobilemeasure.MeasureUiState
+import com.capstone.mobilemeasure.arcore.ArCameraPreview
+import com.capstone.mobilemeasure.arcore.ArCoreSessionManager
+import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
 
 private val ScreenBg = Color(0xFFF6F7FB)
 private val Highlight = Color(0xFF6FE0C2)
@@ -46,14 +54,19 @@ private val RoseBg = Color(0xFFFFE4E6)
 private val Subdued = Color(0xFF6B7280)
 private val DividerGrey = Color(0xFFE5E7EB)
 private val Ink = Color(0xFF111827)
+private val Accent = Color(0xFF3B82F6)
 
 @Composable
 fun MeasureScreen(
     state: MeasureUiState,
+    arSessionManager: ArCoreSessionManager,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onMarkIssue: () -> Unit,
     onUpload: () -> Unit,
+    onCalibrationFieldChange: (startFloorX: String?, startFloorY: String?, headingDeg: String?) -> Unit,
+    onRefreshContext: () -> Unit,
+    onCalibrationPickedFromMap: (floorX: Double, floorY: Double, headingDeg: Double?) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -61,13 +74,13 @@ fun MeasureScreen(
             .background(ScreenBg)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
             text = if (state.isMeasuring) {
                 "매장을 천천히 걸어다니며 구석구석을\n측정하고 있습니다."
             } else {
-                "측정 시작 버튼을 눌러\nRSSI 데이터 수집을 시작하세요."
+                "시작 위치/방향을 입력하고 카메라가\nAR 추적 중인지 확인한 뒤 측정을 시작하세요."
             },
             modifier = Modifier.fillMaxWidth(),
             textAlign = TextAlign.Center,
@@ -75,6 +88,39 @@ fun MeasureScreen(
             fontSize = 14.sp,
             lineHeight = 20.sp,
         )
+
+        ArPreviewCard(arSessionManager = arSessionManager, state = state)
+
+        val startPos = state.activeCalibration?.let {
+            FloorPositionDto(x = it.startFloorX, y = it.startFloorY, z = it.startFloorZ)
+        } ?: run {
+            val x = state.calibrationInput.startFloorX.toDoubleOrNull()
+            val y = state.calibrationInput.startFloorY.toDoubleOrNull()
+            if (x != null && y != null) FloorPositionDto(x = x, y = y, z = 1.2) else null
+        }
+        val headingDeg = state.activeCalibration?.initialHeadingDeg
+            ?: state.calibrationInput.initialHeadingDeg.toDoubleOrNull()
+
+        FloorplanCard(
+            floorplan = state.floorplan,
+            bounds = state.floorBounds,
+            currentPosition = state.currentFloorPosition,
+            startPosition = startPos,
+            headingDeg = headingDeg,
+            isOutOfBounds = state.isOutOfBounds,
+            editable = !state.isMeasuring,
+            onRefresh = onRefreshContext,
+            onCalibrationPicked = onCalibrationPickedFromMap,
+        )
+
+        if (!state.isMeasuring) {
+            CalibrationInputCard(
+                input = state.calibrationInput,
+                onFieldChange = onCalibrationFieldChange,
+            )
+        }
+
+        FloorPositionCard(state = state)
 
         WifiStatusCard(state)
 
@@ -94,6 +140,190 @@ fun MeasureScreen(
             MarkIssueLink(onMarkIssue)
         } else {
             Spacer(Modifier.height(0.dp))
+        }
+    }
+}
+
+@Composable
+private fun ArPreviewCard(arSessionManager: ArCoreSessionManager, state: MeasureUiState) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
+        shape = RoundedCornerShape(20.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(220.dp),
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            when (state.arAvailability) {
+                ArCoreSessionManager.Availability.UNSUPPORTED -> {
+                    UnsupportedArOverlay()
+                }
+                else -> {
+                    ArCameraPreview(
+                        sessionManager = arSessionManager,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    ArStatusOverlay(state)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnsupportedArOverlay() {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "이 기기는 ARCore를 지원하지 않습니다.\n시작 좌표만으로 측정합니다.",
+            color = Color.White,
+            fontSize = 13.sp,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun ArStatusOverlay(state: MeasureUiState) {
+    val tracking = state.arTrackingState ?: "INITIALIZING"
+    val pos = state.currentFloorPosition
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = "AR: $tracking",
+            color = if (tracking == "TRACKING") Highlight else Color.White,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        if (pos != null) {
+            Text(
+                text = "floor=(${"%.2f".format(pos.x)}, ${"%.2f".format(pos.y)}, ${"%.2f".format(pos.z)})",
+                color = Color.White,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CalibrationInputCard(
+    input: CalibrationInputState,
+    onFieldChange: (startFloorX: String?, startFloorY: String?, headingDeg: String?) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, DividerGrey),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "도면 기준 시작 위치 / 방향",
+                color = Ink,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "좌표계: origin=좌상단, +x=오른쪽, +y=아래 (단위 m).\n" +
+                    "heading: 휴대폰 정면이 도면 +x로부터 회전한 각도, 시계방향(+x→+y) 양수.\n" +
+                    "예) 0°=오른쪽, 90°=아래, 180°=왼쪽, 270°=위",
+                color = Subdued,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = input.startFloorX,
+                    onValueChange = { onFieldChange(it, null, null) },
+                    label = { Text("startFloorX (m)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedTextField(
+                    value = input.startFloorY,
+                    onValueChange = { onFieldChange(null, it, null) },
+                    label = { Text("startFloorY (m)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            OutlinedTextField(
+                value = input.initialHeadingDeg,
+                onValueChange = { onFieldChange(null, null, it) },
+                label = { Text("initialHeadingDeg (°, +x=0, CW+)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FloorPositionCard(state: MeasureUiState) {
+    val cur = state.currentFloorPosition
+    val last = state.lastUploadedFloorPosition
+    val bounds = state.floorBounds
+    val border = if (state.isOutOfBounds) BorderStroke(2.dp, Rose) else BorderStroke(1.dp, DividerGrey)
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(14.dp),
+        border = border,
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("Floor 위치", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = "현재: " + (cur?.let { "(${"%.2f".format(it.x)}, ${"%.2f".format(it.y)}, ${"%.2f".format(it.z)})" } ?: "—"),
+                color = if (state.isOutOfBounds) Rose else Subdued,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                text = "마지막 업로드: " + (last?.let { "(${"%.2f".format(it.x)}, ${"%.2f".format(it.y)}, ${"%.2f".format(it.z)})" } ?: "—"),
+                color = Subdued,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+            if (bounds != null) {
+                Text(
+                    text = "bounds: x ${"%.1f".format(bounds.minX)}~${"%.1f".format(bounds.maxX)}, " +
+                        "y ${"%.1f".format(bounds.minY)}~${"%.1f".format(bounds.maxY)}",
+                    color = Subdued,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            if (state.isOutOfBounds) {
+                Text(
+                    text = "⚠ 현재 좌표가 도면 bounds 밖 (누적 ${state.outOfBoundsCount}점)",
+                    color = Rose,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         }
     }
 }
@@ -148,7 +378,7 @@ private fun WifiStatusCard(state: MeasureUiState) {
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .height(220.dp),
+            .height(180.dp),
     ) {
         Box(
             modifier = Modifier
@@ -163,8 +393,8 @@ private fun WifiStatusCard(state: MeasureUiState) {
                 Icon(
                     imageVector = Icons.Filled.Wifi,
                     contentDescription = null,
-                    tint = if (state.isMeasuring) Color(0xFF3B82F6) else Color(0xFFCBD5E1),
-                    modifier = Modifier.size(64.dp),
+                    tint = if (state.isMeasuring) Accent else Color(0xFFCBD5E1),
+                    modifier = Modifier.size(56.dp),
                 )
                 val sample = state.lastSample
                 if (sample != null) {
