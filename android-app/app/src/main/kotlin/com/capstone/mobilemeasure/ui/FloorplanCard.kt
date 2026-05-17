@@ -3,6 +3,7 @@ package com.capstone.mobilemeasure.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +30,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -41,6 +45,10 @@ import coil.request.ImageRequest
 import com.capstone.mobilemeasure.data.remote.dto.FloorBoundsDto
 import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
 import com.capstone.mobilemeasure.data.remote.dto.FloorplanInfoDto
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
 
 private val Ink = Color(0xFF111827)
 private val Subdued = Color(0xFF6B7280)
@@ -49,10 +57,15 @@ private val Accent = Color(0xFF3B82F6)
 private val Rose = Color(0xFFE53E5C)
 
 /**
- * 백엔드에서 받은 floorplan presigned URL을 표시하고 그 위에 현재/시작 위치를 점으로 찍는다.
+ * 도면 이미지 + 시작/현재 위치 점 + heading 화살표 표시.
  *
- * Presigned URL은 매번 X-Amz-* 쿼리가 바뀌므로 Coil 디스크/메모리 캐시 키는
- * 쿼리를 제외한 path 부분만 사용한다 (동일 asset이면 키가 안정).
+ * editable=true 일 때 도면 위 드래그로 시작 위치 + heading을 한 번에 지정할 수 있다:
+ *   - 손가락을 내려놓는 지점 = 시작 위치 (floor 좌표)
+ *   - 드래그 방향 = heading (사용자 정면이 floor +x로부터 회전한 각도, CW 양수)
+ *   - 드래그 거리가 너무 짧으면 heading은 갱신하지 않고 위치만 변경
+ *
+ * heading 규약은 FloorPositionMapper와 동일해야 한다 (atan2의 결과가 그대로 들어맞도록
+ * 화면 좌표 y가 floor +y와 같은 방향이라는 점을 이용).
  */
 @Composable
 fun FloorplanCard(
@@ -60,8 +73,11 @@ fun FloorplanCard(
     bounds: FloorBoundsDto?,
     currentPosition: FloorPositionDto?,
     startPosition: FloorPositionDto?,
+    headingDeg: Double?,
     isOutOfBounds: Boolean,
+    editable: Boolean,
     onRefresh: () -> Unit,
+    onCalibrationPicked: (floorX: Double, floorY: Double, headingDeg: Double?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -104,9 +120,19 @@ fun FloorplanCard(
                     bounds = bounds,
                     currentPosition = currentPosition,
                     startPosition = startPosition,
+                    headingDeg = headingDeg,
                     isOutOfBounds = isOutOfBounds,
+                    editable = editable,
                     onRefresh = onRefresh,
+                    onCalibrationPicked = onCalibrationPicked,
                 )
+                if (editable) {
+                    Text(
+                        text = "도면을 누른 채로 드래그 → 시작 위치 + 방향 지정. 짧게 탭만 하면 위치만 변경.",
+                        color = Subdued,
+                        fontSize = 11.sp,
+                    )
+                }
                 FloorplanMeta(floorplan = floorplan, bounds = bounds)
             }
         }
@@ -120,8 +146,11 @@ private fun FloorplanCanvas(
     bounds: FloorBoundsDto?,
     currentPosition: FloorPositionDto?,
     startPosition: FloorPositionDto?,
+    headingDeg: Double?,
     isOutOfBounds: Boolean,
+    editable: Boolean,
     onRefresh: () -> Unit,
+    onCalibrationPicked: (floorX: Double, floorY: Double, headingDeg: Double?) -> Unit,
 ) {
     val widthPx = floorplan.widthPx ?: 4
     val heightPx = floorplan.heightPx ?: 3
@@ -142,12 +171,59 @@ private fun FloorplanCanvas(
         mutableStateOf(AsyncImagePainter.State.Empty)
     }
 
+    // 드래그 임시 상태 (편집 중에만 의미 있음)
+    var dragStartPx by remember { mutableStateOf<Offset?>(null) }
+    var dragCurPx by remember { mutableStateOf<Offset?>(null) }
+
+    val rangeX = bounds?.let { it.maxX - it.minX } ?: 0.0
+    val rangeY = bounds?.let { it.maxY - it.minY } ?: 0.0
+    val hasBounds = bounds != null && rangeX > 0.0 && rangeY > 0.0
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(aspect.coerceIn(0.3f, 4f))
             .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFFF3F4F6)),
+            .background(Color(0xFFF3F4F6))
+            .then(
+                if (editable && hasBounds) {
+                    Modifier.pointerInput(bounds, rangeX, rangeY) {
+                        detectDragGestures(
+                            onDragStart = { off ->
+                                dragStartPx = off
+                                dragCurPx = off
+                            },
+                            onDrag = { change, _ ->
+                                dragCurPx = change.position
+                            },
+                            onDragEnd = {
+                                val start = dragStartPx
+                                val end = dragCurPx
+                                if (start != null && end != null && size.width > 0 && size.height > 0 && bounds != null) {
+                                    val sx = bounds.minX + (start.x / size.width.toDouble()) * rangeX
+                                    val sy = bounds.minY + (start.y / size.height.toDouble()) * rangeY
+                                    val dx = (end.x - start.x).toDouble()
+                                    val dy = (end.y - start.y).toDouble()
+                                    val dist = hypot(dx, dy)
+                                    // 너무 짧은 드래그는 heading 의미 없음 → 위치만 갱신
+                                    val heading = if (dist >= MIN_HEADING_DRAG_PX) {
+                                        Math.toDegrees(atan2(dy, dx))
+                                    } else {
+                                        null
+                                    }
+                                    onCalibrationPicked(sx, sy, heading)
+                                }
+                                dragStartPx = null
+                                dragCurPx = null
+                            },
+                            onDragCancel = {
+                                dragStartPx = null
+                                dragCurPx = null
+                            },
+                        )
+                    }
+                } else Modifier,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         AsyncImage(
@@ -171,9 +247,7 @@ private fun FloorplanCanvas(
         }
 
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val rangeX = bounds?.let { it.maxX - it.minX } ?: 0.0
-            val rangeY = bounds?.let { it.maxY - it.minY } ?: 0.0
-            if (bounds == null || rangeX <= 0.0 || rangeY <= 0.0) return@Canvas
+            if (!hasBounds || bounds == null) return@Canvas
 
             fun toCanvas(p: FloorPositionDto): Offset {
                 val nx = ((p.x - bounds.minX) / rangeX).toFloat().coerceIn(-0.2f, 1.2f)
@@ -181,11 +255,35 @@ private fun FloorplanCanvas(
                 return Offset(nx * size.width, ny * size.height)
             }
 
+            // 확정된 시작 위치 + heading 화살표
             startPosition?.let { s ->
                 val o = toCanvas(s)
                 drawCircle(color = Color(0x80000000), radius = 10f, center = o)
                 drawCircle(color = Color.White, radius = 6f, center = o)
+                headingDeg?.let { h ->
+                    val rad = Math.toRadians(h)
+                    val arrowLen = minOf(size.width, size.height) * 0.14f
+                    val tip = Offset(
+                        o.x + (cos(rad) * arrowLen).toFloat(),
+                        o.y + (sin(rad) * arrowLen).toFloat(),
+                    )
+                    drawArrow(o, tip, Color.White, strokeWidth = 4f)
+                    drawArrow(o, tip, Ink, strokeWidth = 2f)
+                }
             }
+
+            // 드래그 임시 표시
+            val ds = dragStartPx
+            val de = dragCurPx
+            if (ds != null && de != null) {
+                drawCircle(color = Accent.copy(alpha = 0.3f), radius = 16f, center = ds)
+                drawCircle(color = Accent, radius = 8f, center = ds)
+                if (hypot((de.x - ds.x).toDouble(), (de.y - ds.y).toDouble()) >= MIN_HEADING_DRAG_PX) {
+                    drawArrow(ds, de, Accent, strokeWidth = 3f)
+                }
+            }
+
+            // 현재 위치 (측정 중)
             currentPosition?.let { c ->
                 val o = toCanvas(c)
                 val ring = if (isOutOfBounds) Rose else Accent
@@ -195,6 +293,43 @@ private fun FloorplanCanvas(
             }
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArrow(
+    from: Offset,
+    to: Offset,
+    color: Color,
+    strokeWidth: Float,
+) {
+    drawLine(color = color, start = from, end = to, strokeWidth = strokeWidth)
+    val dx = to.x - from.x
+    val dy = to.y - from.y
+    val len = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+    if (len < 1f) return
+    val ux = dx / len
+    val uy = dy / len
+    val headSize = (strokeWidth * 4f).coerceAtLeast(10f)
+    // 화살촉: 끝점에서 뒤로 -uxRot 만큼 후퇴한 두 점
+    val cos30 = 0.8660254f
+    val sin30 = 0.5f
+    val backX = -ux * headSize
+    val backY = -uy * headSize
+    val left = Offset(
+        to.x + backX * cos30 - backY * sin30,
+        to.y + backY * cos30 + backX * sin30,
+    )
+    val right = Offset(
+        to.x + backX * cos30 + backY * sin30,
+        to.y + backY * cos30 - backX * sin30,
+    )
+    val path = Path().apply {
+        moveTo(to.x, to.y)
+        lineTo(left.x, left.y)
+        lineTo(right.x, right.y)
+        close()
+    }
+    drawPath(path = path, color = color, style = Stroke(width = strokeWidth))
+    drawPath(path = path, color = color)
 }
 
 @Composable
@@ -267,3 +402,5 @@ private fun EmptyState(message: String) {
         )
     }
 }
+
+private const val MIN_HEADING_DRAG_PX = 24.0

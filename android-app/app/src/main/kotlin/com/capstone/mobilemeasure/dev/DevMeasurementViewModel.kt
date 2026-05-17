@@ -10,7 +10,6 @@ import com.capstone.mobilemeasure.data.remote.NetworkClient
 import com.capstone.mobilemeasure.data.remote.dto.CalibrationDto
 import com.capstone.mobilemeasure.data.remote.dto.CreateMeasurementSessionRequest
 import com.capstone.mobilemeasure.data.remote.dto.DeviceInfoDto
-import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasureContextDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasurementSessionResponseDto
 import com.capstone.mobilemeasure.data.repository.MeasurementRepository
@@ -141,20 +140,21 @@ class DevMeasurementViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (_state.value.isCreatingSession) return
 
+        // calibration이 설정되지 않은 상태에서 session을 만들면 잘못된 시작 좌표가
+        // 서버에 저장돼서 분석 단계까지 오염된다. 측정 화면에서 도면 위 시작 위치 +
+        // heading을 먼저 입력해야 session 생성을 허용한다.
         val draft = ActiveCalibration.current
-        val calibration = if (draft != null) {
-            CalibrationDto(
-                method = "manual_start_point",
-                startFloorPosition = draft.toStartFloorPositionDto(),
-                initialHeadingDeg = draft.initialHeadingDeg,
-            )
-        } else {
-            CalibrationDto(
-                method = "manual_start_point",
-                startFloorPosition = FloorPositionDto(x = 0.0, y = 0.0, z = 1.2),
-                initialHeadingDeg = 0.0,
-            )
+        if (draft == null) {
+            val msg = "calibration 미설정 — 측정 화면에서 시작 위치/heading을 먼저 입력하세요"
+            appendLog("session 생성 거부: $msg")
+            _state.update { it.copy(errorMessage = msg) }
+            return
         }
+        val calibration = CalibrationDto(
+            method = "manual_start_point",
+            startFloorPosition = draft.toStartFloorPositionDto(),
+            initialHeadingDeg = draft.initialHeadingDeg,
+        )
         val request = CreateMeasurementSessionRequest(
             measurementLinkToken = token,
             measurementType = "rssi",

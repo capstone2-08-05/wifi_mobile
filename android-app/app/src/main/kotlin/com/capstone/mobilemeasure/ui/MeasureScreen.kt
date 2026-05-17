@@ -66,6 +66,7 @@ fun MeasureScreen(
     onUpload: () -> Unit,
     onCalibrationFieldChange: (startFloorX: String?, startFloorY: String?, headingDeg: String?) -> Unit,
     onRefreshContext: () -> Unit,
+    onCalibrationPickedFromMap: (floorX: Double, floorY: Double, headingDeg: Double?) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -90,19 +91,26 @@ fun MeasureScreen(
 
         ArPreviewCard(arSessionManager = arSessionManager, state = state)
 
+        val startPos = state.activeCalibration?.let {
+            FloorPositionDto(x = it.startFloorX, y = it.startFloorY, z = it.startFloorZ)
+        } ?: run {
+            val x = state.calibrationInput.startFloorX.toDoubleOrNull()
+            val y = state.calibrationInput.startFloorY.toDoubleOrNull()
+            if (x != null && y != null) FloorPositionDto(x = x, y = y, z = 1.2) else null
+        }
+        val headingDeg = state.activeCalibration?.initialHeadingDeg
+            ?: state.calibrationInput.initialHeadingDeg.toDoubleOrNull()
+
         FloorplanCard(
             floorplan = state.floorplan,
             bounds = state.floorBounds,
             currentPosition = state.currentFloorPosition,
-            startPosition = state.activeCalibration?.let {
-                FloorPositionDto(x = it.startFloorX, y = it.startFloorY, z = it.startFloorZ)
-            } ?: run {
-                val x = state.calibrationInput.startFloorX.toDoubleOrNull()
-                val y = state.calibrationInput.startFloorY.toDoubleOrNull()
-                if (x != null && y != null) FloorPositionDto(x = x, y = y, z = 1.2) else null
-            },
+            startPosition = startPos,
+            headingDeg = headingDeg,
             isOutOfBounds = state.isOutOfBounds,
+            editable = !state.isMeasuring,
             onRefresh = onRefreshContext,
+            onCalibrationPicked = onCalibrationPickedFromMap,
         )
 
         if (!state.isMeasuring) {

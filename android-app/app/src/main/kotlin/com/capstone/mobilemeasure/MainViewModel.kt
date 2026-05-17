@@ -144,6 +144,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 도면 위에서 사용자가 드래그로 시작 위치 + heading을 직접 지정했을 때 호출된다.
+     * 텍스트 입력 필드도 같이 갱신해서 두 입력 경로가 항상 동기화되도록 한다.
+     * headingDeg=null 이면 (드래그 거리가 짧았던 경우) heading은 기존값 유지하고 위치만 갱신.
+     */
+    fun onCalibrationPickedFromMap(floorX: Double, floorY: Double, headingDeg: Double?) {
+        if (_state.value.isMeasuring) return
+        _state.update {
+            val cur = it.calibrationInput
+            it.copy(
+                calibrationInput = cur.copy(
+                    startFloorX = formatCoord(floorX),
+                    startFloorY = formatCoord(floorY),
+                    initialHeadingDeg = headingDeg?.let(::formatHeading) ?: cur.initialHeadingDeg,
+                ),
+            )
+        }
+        parseCalibrationInput()?.let { ActiveCalibration.publish(it) }
+        appendLog(
+            "도면 picker: start=(${"%.2f".format(floorX)}, ${"%.2f".format(floorY)})" +
+                (headingDeg?.let { " h=${"%.1f".format(normalizeHeading(it))}°" } ?: "")
+        )
+    }
+
+    private fun formatCoord(v: Double): String = "%.2f".format(v)
+    private fun formatHeading(v: Double): String = "%.1f".format(normalizeHeading(v))
+
+    /** atan2 결과는 (-180, 180] 범위라 사용자에게는 [0, 360) 범위가 더 자연스럽다. */
+    private fun normalizeHeading(deg: Double): Double {
+        var d = deg % 360.0
+        if (d < 0) d += 360.0
+        return d
+    }
+
     fun startMeasuring() {
         if (_state.value.isMeasuring) return
         if (_state.value.isUploadingPoints || _state.value.isCompleting) {

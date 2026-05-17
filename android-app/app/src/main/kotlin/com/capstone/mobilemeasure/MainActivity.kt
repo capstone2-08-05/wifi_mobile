@@ -146,6 +146,7 @@ private fun AppRoot(viewModel: MainViewModel, devViewModel: DevMeasurementViewMo
                         )
                     },
                     onRefreshContext = viewModel::refreshContext,
+                    onCalibrationPickedFromMap = viewModel::onCalibrationPickedFromMap,
                 )
                 Screen.DebugLog -> DebugLogScreen(logs = state.recentLogs)
                 Screen.DevApi -> DevMeasureScreen(
