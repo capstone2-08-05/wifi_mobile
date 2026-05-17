@@ -3,14 +3,22 @@ package com.capstone.mobilemeasure
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.capstone.mobilemeasure.arcore.ArCoreSessionManager
+import com.capstone.mobilemeasure.arcore.ArPoseSnapshot
+import com.capstone.mobilemeasure.arcore.FloorCalibrationState
+import com.capstone.mobilemeasure.arcore.FloorPositionMapper
 import com.capstone.mobilemeasure.data.MeasurementSession
 import com.capstone.mobilemeasure.data.RssiSample
 import com.capstone.mobilemeasure.data.remote.NetworkClient
 import com.capstone.mobilemeasure.data.remote.dto.CompleteMeasurementSessionRequest
+import com.capstone.mobilemeasure.data.remote.dto.FloorBoundsDto
 import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
+import com.capstone.mobilemeasure.data.remote.dto.FloorplanInfoDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasurementPointDto
 import com.capstone.mobilemeasure.data.remote.dto.UploadMeasurementPointsRequest
 import com.capstone.mobilemeasure.data.repository.MeasurementRepository
+import com.capstone.mobilemeasure.data.session.ActiveCalibration
+import com.capstone.mobilemeasure.data.session.ActiveMeasureContext
 import com.capstone.mobilemeasure.data.session.ActiveMeasurementSession
 import com.capstone.mobilemeasure.permission.PermissionHelper
 import com.capstone.mobilemeasure.wifi.WifiScanner
@@ -23,6 +31,12 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.util.ArrayDeque
 import java.util.UUID
+
+data class CalibrationInputState(
+    val startFloorX: String = "0.0",
+    val startFloorY: String = "0.0",
+    val initialHeadingDeg: String = "0.0",
+)
 
 data class MeasureUiState(
     val isMeasuring: Boolean = false,
@@ -39,6 +53,17 @@ data class MeasureUiState(
     val sessionCompleted: Boolean = false,
     val lastUploadInfo: String? = null,
     val completionSummary: String? = null,
+    val calibrationInput: CalibrationInputState = CalibrationInputState(),
+    val activeCalibration: FloorCalibrationState? = null,
+    val arAvailability: ArCoreSessionManager.Availability =
+        ArCoreSessionManager.Availability.UNKNOWN,
+    val arTrackingState: String? = null,
+    val currentFloorPosition: FloorPositionDto? = null,
+    val lastUploadedFloorPosition: FloorPositionDto? = null,
+    val floorBounds: FloorBoundsDto? = null,
+    val floorplan: FloorplanInfoDto? = null,
+    val isOutOfBounds: Boolean = false,
+    val outOfBoundsCount: Int = 0,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -46,8 +71,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val LOG_BUFFER_SIZE = 200
         private const val POINT_BATCH_THRESHOLD = 5
-        private const val DEFAULT_FLOOR_Z = 1.2
-        private const val SOURCE_TAG = "android_rssi_only"
+        private const val SOURCE_TAG = "android_arcore_rssi"
+        private const val POSITION_MODE_AR = "arcore_calibrated"
+        private const val POSITION_MODE_FALLBACK = "calibration_only"
     }
 
     private val repository = MeasurementRepository(NetworkClient.measurementApi)
@@ -55,16 +81,68 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(MeasureUiState())
     val state: StateFlow<MeasureUiState> = _state.asStateFlow()
 
+    val arSessionManager: ArCoreSessionManager = ArCoreSessionManager(
+        onError = { msg -> appendLog("AR: $msg") },
+    )
+
     private val logs: ArrayDeque<String> = ArrayDeque()
     private var session: MeasurementSession? = null
     private var collectJob: Job? = null
+    private var poseObserveJob: Job? = null
+    private var availabilityObserveJob: Job? = null
     private var scanner: WifiScanner? = null
 
     private val pointBuffer: MutableList<MeasurementPointDto> = mutableListOf()
     private var stepIndex: Int = 0
 
-    /** Snapshot of the active backend session id taken at startMeasuring. */
     private var activeApiSessionId: String? = null
+
+    private var contextObserveJob: Job? = null
+
+    init {
+        availabilityObserveJob = viewModelScope.launch {
+            arSessionManager.availability.collect { avail ->
+                _state.update { it.copy(arAvailability = avail) }
+            }
+        }
+        poseObserveJob = viewModelScope.launch {
+            arSessionManager.latestPose.collect { pose ->
+                onPoseUpdated(pose)
+            }
+        }
+        contextObserveJob = viewModelScope.launch {
+            ActiveMeasureContext.state.collect { ctx ->
+                _state.update {
+                    it.copy(
+                        floorBounds = ctx?.bounds,
+                        floorplan = ctx?.floorplan,
+                    )
+                }
+            }
+        }
+    }
+
+    fun onCalibrationFieldChange(
+        startFloorX: String? = null,
+        startFloorY: String? = null,
+        initialHeadingDeg: String? = null,
+    ) {
+        _state.update {
+            val cur = it.calibrationInput
+            it.copy(
+                calibrationInput = cur.copy(
+                    startFloorX = startFloorX ?: cur.startFloorX,
+                    startFloorY = startFloorY ?: cur.startFloorY,
+                    initialHeadingDeg = initialHeadingDeg ?: cur.initialHeadingDeg,
+                ),
+            )
+        }
+        // 측정 시작 전이라도 Dev 화면에서 session 생성 시 calibration 값을 가져갈 수 있도록
+        // 입력이 valid해질 때마다 draft를 publish 한다. initialAr*은 측정 시작 시점에 갱신됨.
+        if (!_state.value.isMeasuring) {
+            parseCalibrationInput()?.let { ActiveCalibration.publish(it) }
+        }
+    }
 
     fun startMeasuring() {
         if (_state.value.isMeasuring) return
@@ -78,6 +156,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             appendLog("권한 누락: ${missing.joinToString { it.substringAfterLast('.') }}")
             return
         }
+
+        val parsedCalibration = parseCalibrationInput() ?: run {
+            appendLog("calibration 입력값을 확인하세요 (숫자 형식)")
+            return
+        }
+
+        val initialPose = arSessionManager.latestPose.value
+        if (initialPose == null) {
+            appendLog("AR pose 없음 — 카메라 프리뷰가 트래킹 시작될 때까지 기다리세요")
+        } else if (!initialPose.isTracking) {
+            appendLog("AR tracking=${initialPose.trackingState} — 시작하지만 좌표 정확도 낮을 수 있음")
+        }
+
+        val calibration = parsedCalibration.copy(
+            initialArX = initialPose?.tx?.toDouble() ?: 0.0,
+            initialArY = initialPose?.ty?.toDouble() ?: 0.0,
+            initialArZ = initialPose?.tz?.toDouble() ?: 0.0,
+        )
+        ActiveCalibration.publish(calibration)
 
         val newSession = try {
             MeasurementSession.start(getApplication())
@@ -108,6 +205,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 appendLog("API 세션 활성: ${apiSession.id} (status=${apiSession.status})")
         }
 
+        appendLog(
+            "calibration: start=(${calibration.startFloorX}, ${calibration.startFloorY}) " +
+                "heading=${calibration.initialHeadingDeg}° " +
+                "initAr=(${"%.3f".format(calibration.initialArX)}, " +
+                "${"%.3f".format(calibration.initialArZ)})"
+        )
         appendLog("session start: ${newSession.sessionId}")
         _state.update {
             it.copy(
@@ -122,6 +225,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 sessionCompleted = false,
                 lastUploadInfo = null,
                 completionSummary = null,
+                activeCalibration = calibration,
+                currentFloorPosition = currentFloorPositionOrStart(calibration, initialPose),
+                lastUploadedFloorPosition = null,
+                outOfBoundsCount = 0,
+                isOutOfBounds = false,
             )
         }
 
@@ -131,10 +239,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     return@collect
                 }
 
+                val cal = ActiveCalibration.current
+                val bounds = _state.value.floorBounds
+                var oobAdded = 0
                 samples.forEach { sample ->
                     newSession.append(sample)
-                    if (activeApiSessionId != null) {
-                        pointBuffer.add(sample.toMeasurementPointDto(stepIndex++))
+                    if (activeApiSessionId != null && cal != null) {
+                        val pose = arSessionManager.latestPose.value
+                        val dto = buildPointDto(sample, cal, pose, stepIndex++)
+                        if (bounds != null && !FloorPositionMapper.isInsideBounds(dto.floorPosition, bounds)) {
+                            oobAdded += 1
+                        }
+                        pointBuffer.add(dto)
+                    }
+                }
+                if (oobAdded > 0) {
+                    appendLog(
+                        "⚠ bounds 밖 point $oobAdded 개 — pos=" +
+                            (_state.value.currentFloorPosition?.let {
+                                "(${"%.2f".format(it.x)}, ${"%.2f".format(it.y)})"
+                            } ?: "?") +
+                            " bounds=(${bounds?.minX}..${bounds?.maxX}, ${bounds?.minY}..${bounds?.maxY})"
+                    )
+                    _state.update {
+                        it.copy(outOfBoundsCount = it.outOfBoundsCount + oobAdded)
                     }
                 }
                 val last = samples.last()
@@ -185,15 +313,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val sample = _state.value.lastSample
+        val pos = _state.value.currentFloorPosition
         val tag = if (sample != null) {
-            "ISSUE marker @ ${sample.bssid} rssi=${sample.rssi}dBm count=${_state.value.sampleCount}"
+            "ISSUE marker @ ${sample.bssid} rssi=${sample.rssi}dBm count=${_state.value.sampleCount}" +
+                (pos?.let { " pos=(${"%.2f".format(it.x)}, ${"%.2f".format(it.y)})" } ?: "")
         } else {
             "ISSUE marker (샘플 없음)"
         }
         appendLog("📍 $tag")
     }
 
-    /** "Upload" 버튼: 측정 종료 후 남은 buffer 재시도 + (필요 시) complete 재시도. */
+    /** Floorplan presigned URL 만료 등으로 재조회가 필요할 때 호출. */
+    fun refreshContext() {
+        val token = ActiveMeasureContext.current?.token
+        if (token.isNullOrBlank()) {
+            appendLog("도면 새로고침: token 없음 — Dev API에서 Context 조회 필요")
+            return
+        }
+        appendLog("도면 새로고침: GET /measurement-links/$token/context")
+        viewModelScope.launch {
+            repository.getContext(token).fold(
+                onSuccess = { ctx ->
+                    ActiveMeasureContext.publish(ctx)
+                    appendLog("도면 새로고침 ok: url=${ctx.floorplan.url?.take(60) ?: "-"}…")
+                },
+                onFailure = { err ->
+                    appendLog("도면 새로고침 실패: ${err.javaClass.simpleName} ${err.message}")
+                },
+            )
+        }
+    }
+
     fun onUploadRequested() {
         val path = _state.value.sessionFilePath
         if (path == null) {
@@ -224,7 +374,117 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         stopMeasuring()
+        availabilityObserveJob?.cancel()
+        poseObserveJob?.cancel()
+        contextObserveJob?.cancel()
+        arSessionManager.close()
         super.onCleared()
+    }
+
+    private fun parseCalibrationInput(): FloorCalibrationState? {
+        val input = _state.value.calibrationInput
+        val x = input.startFloorX.toDoubleOrNull() ?: return null
+        val y = input.startFloorY.toDoubleOrNull() ?: return null
+        val h = input.initialHeadingDeg.toDoubleOrNull() ?: return null
+        return FloorCalibrationState(
+            startFloorX = x,
+            startFloorY = y,
+            initialHeadingDeg = h,
+            initialArX = 0.0,
+            initialArY = 0.0,
+            initialArZ = 0.0,
+        )
+    }
+
+    private fun onPoseUpdated(pose: ArPoseSnapshot?) {
+        val cal = ActiveCalibration.current ?: _state.value.activeCalibration
+        val tracking = pose?.trackingState
+        val floorPos = if (cal != null && pose != null) {
+            FloorPositionMapper.map(cal, pose)
+        } else if (cal != null) {
+            cal.toStartFloorPositionDto()
+        } else {
+            null
+        }
+        val bounds = _state.value.floorBounds
+        val outside = floorPos != null && bounds != null &&
+            !FloorPositionMapper.isInsideBounds(floorPos, bounds)
+        _state.update {
+            it.copy(
+                arTrackingState = tracking,
+                currentFloorPosition = floorPos ?: it.currentFloorPosition,
+                isOutOfBounds = outside,
+            )
+        }
+    }
+
+    private fun currentFloorPositionOrStart(
+        calibration: FloorCalibrationState,
+        pose: ArPoseSnapshot?,
+    ): FloorPositionDto = if (pose != null) {
+        FloorPositionMapper.map(calibration, pose)
+    } else {
+        calibration.toStartFloorPositionDto()
+    }
+
+    private fun buildPointDto(
+        sample: RssiSample,
+        calibration: FloorCalibrationState,
+        pose: ArPoseSnapshot?,
+        step: Int,
+    ): MeasurementPointDto {
+        val floorPos = if (pose != null) {
+            FloorPositionMapper.map(calibration, pose)
+        } else {
+            calibration.toStartFloorPositionDto()
+        }
+        val mode = if (pose != null) POSITION_MODE_AR else POSITION_MODE_FALLBACK
+        val metadata: Map<String, Any?> = buildMap {
+            put("source", SOURCE_TAG)
+            put("position_mode", mode)
+            if (pose != null) {
+                put(
+                    "ar_pose",
+                    mapOf(
+                        "tx" to pose.tx,
+                        "ty" to pose.ty,
+                        "tz" to pose.tz,
+                        "qx" to pose.qx,
+                        "qy" to pose.qy,
+                        "qz" to pose.qz,
+                        "qw" to pose.qw,
+                        "tracking_state" to pose.trackingState,
+                        "timestamp_ns" to pose.timestampNs,
+                    ),
+                )
+            }
+            put(
+                "calibration",
+                mapOf(
+                    "start_floor_x" to calibration.startFloorX,
+                    "start_floor_y" to calibration.startFloorY,
+                    "start_floor_z" to calibration.startFloorZ,
+                    "initial_heading_deg" to calibration.initialHeadingDeg,
+                    "initial_ar_x" to calibration.initialArX,
+                    "initial_ar_y" to calibration.initialArY,
+                    "initial_ar_z" to calibration.initialArZ,
+                ),
+            )
+        }
+        return MeasurementPointDto(
+            clientPointId = UUID.randomUUID().toString(),
+            floorPosition = floorPos,
+            rssiDbm = sample.rssi.toDouble(),
+            apBssid = sample.bssid,
+            apSsid = sample.ssid,
+            channel = null,
+            frequencyMhz = sample.frequencyMhz,
+            timestampAtPoint = Instant.ofEpochMilli(sample.timestampMs).toString(),
+            arTrackingState = pose?.trackingState,
+            arConfidence = null,
+            stepIndex = step,
+            metadataJson = metadata,
+        )
     }
 
     private fun appendLog(line: String) {
@@ -237,22 +497,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun RssiSample.toMeasurementPointDto(step: Int): MeasurementPointDto =
-        MeasurementPointDto(
-            clientPointId = UUID.randomUUID().toString(),
-            floorPosition = FloorPositionDto(x = 0.0, y = 0.0, z = DEFAULT_FLOOR_Z),
-            rssiDbm = rssi.toDouble(),
-            apBssid = bssid,
-            apSsid = ssid,
-            channel = null,
-            frequencyMhz = frequencyMhz,
-            timestampAtPoint = Instant.ofEpochMilli(timestampMs).toString(),
-            arTrackingState = null,
-            arConfidence = null,
-            stepIndex = step,
-            metadataJson = mapOf("source" to SOURCE_TAG),
-        )
-
     private fun maybeAutoUpload() {
         val sessionId = activeApiSessionId ?: return
         if (_state.value.isUploadingPoints) return
@@ -260,7 +504,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { flushBuffer(sessionId = sessionId, reason = "threshold") }
     }
 
-    /** Drain the buffer in batches. Failed batches stay in buffer. */
     private suspend fun flushBuffer(sessionId: String, reason: String) {
         if (_state.value.isUploadingPoints) return
         if (pointBuffer.isEmpty()) return
@@ -282,6 +525,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                 result.fold(
                     onSuccess = { resp ->
+                        val lastFloor = batch.lastOrNull()?.floorPosition
                         repeat(batch.size) { pointBuffer.removeAt(0) }
                         val info = "inserted=${resp.inserted} dup=${resp.duplicated} " +
                             "status=${resp.sessionStatus}"
@@ -291,6 +535,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 pendingBufferSize = pointBuffer.size,
                                 serverPointsTotal = it.serverPointsTotal + resp.inserted,
                                 lastUploadInfo = info,
+                                lastUploadedFloorPosition = lastFloor ?: it.lastUploadedFloorPosition,
                             )
                         }
                     },
@@ -323,10 +568,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(isCompleting = true) }
         appendLog("POST /complete sessionId=$sessionId")
 
+        val endPos = _state.value.currentFloorPosition
+            ?: _state.value.activeCalibration?.toStartFloorPositionDto()
+            ?: FloorPositionDto(x = 0.0, y = 0.0, z = FloorCalibrationState.DEFAULT_FLOOR_Z)
+
         val result = repository.completeSession(
             sessionId = sessionId,
             request = CompleteMeasurementSessionRequest(
-                endPosition = FloorPositionDto(x = 0.0, y = 0.0, z = DEFAULT_FLOOR_Z),
+                endPosition = endPos,
             ),
         )
 

@@ -14,12 +14,17 @@ object PermissionHelper {
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.ACCESS_WIFI_STATE,
             Manifest.permission.CHANGE_WIFI_STATE,
+            Manifest.permission.CAMERA,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             base += Manifest.permission.NEARBY_WIFI_DEVICES
         }
         return base.toTypedArray()
     }
+
+    fun hasCameraPermission(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
 
     fun hasAllPermissions(context: Context): Boolean =
         requiredPermissions().all { permission ->

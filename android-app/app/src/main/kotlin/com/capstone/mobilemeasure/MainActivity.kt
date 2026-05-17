@@ -133,10 +133,19 @@ private fun AppRoot(viewModel: MainViewModel, devViewModel: DevMeasurementViewMo
             when (screen) {
                 Screen.Measure -> MeasureScreen(
                     state = state,
+                    arSessionManager = viewModel.arSessionManager,
                     onStart = viewModel::startMeasuring,
                     onStop = viewModel::stopMeasuring,
                     onMarkIssue = viewModel::markIssue,
                     onUpload = viewModel::onUploadRequested,
+                    onCalibrationFieldChange = { x, y, h ->
+                        viewModel.onCalibrationFieldChange(
+                            startFloorX = x,
+                            startFloorY = y,
+                            initialHeadingDeg = h,
+                        )
+                    },
+                    onRefreshContext = viewModel::refreshContext,
                 )
                 Screen.DebugLog -> DebugLogScreen(logs = state.recentLogs)
                 Screen.DevApi -> DevMeasureScreen(
@@ -145,6 +154,9 @@ private fun AppRoot(viewModel: MainViewModel, devViewModel: DevMeasurementViewMo
                     onFetchContext = devViewModel::fetchContext,
                     onCreateSession = devViewModel::createSession,
                     onClear = devViewModel::clear,
+                    onScannedToken = devViewModel::onScannedToken,
+                    onScanError = devViewModel::onScanError,
+                    onScanInstallProgress = devViewModel::onScanInstallProgress,
                 )
             }
         }
