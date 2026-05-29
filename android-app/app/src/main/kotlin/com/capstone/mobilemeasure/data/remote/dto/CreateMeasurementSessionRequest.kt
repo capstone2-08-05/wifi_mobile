@@ -9,6 +9,9 @@ data class CreateMeasurementSessionRequest(
     @SerializedName("measurement_type")
     val measurementType: String = "rssi",
 
+    @SerializedName("measurement_purpose")
+    val measurementPurpose: String = "calibration",
+
     @SerializedName("device_info")
     val deviceInfo: DeviceInfoDto = DeviceInfoDto(),
 
@@ -56,6 +59,9 @@ data class MeasurementSessionResponseDto(
 
     @SerializedName("measurement_type")
     val measurementType: String,
+
+    @SerializedName("measurement_purpose")
+    val measurementPurpose: String = "unknown",
 
     @SerializedName("status")
     val status: String,

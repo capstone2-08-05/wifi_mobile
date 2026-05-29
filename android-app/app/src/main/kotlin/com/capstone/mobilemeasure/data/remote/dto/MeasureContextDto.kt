@@ -35,6 +35,9 @@ data class MeasureContextDto(
 
     @SerializedName("existing_ap_layouts")
     val existingApLayouts: List<Map<String, Any?>> = emptyList(),
+
+    @SerializedName("recommended_measurement_purpose")
+    val recommendedMeasurementPurpose: String = "calibration",
 )
 
 data class FloorplanInfoDto(

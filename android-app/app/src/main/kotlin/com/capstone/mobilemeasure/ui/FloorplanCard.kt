@@ -200,13 +200,18 @@ private fun FloorplanCanvas(
                                 val start = dragStartPx
                                 val end = dragCurPx
                                 if (start != null && end != null && size.width > 0 && size.height > 0 && bounds != null) {
-                                    val sx = bounds.minX + (start.x / size.width.toDouble()) * rangeX
-                                    val sy = bounds.minY + (start.y / size.height.toDouble()) * rangeY
                                     val dx = (end.x - start.x).toDouble()
                                     val dy = (end.y - start.y).toDouble()
                                     val dist = hypot(dx, dy)
-                                    // 너무 짧은 드래그는 heading 의미 없음 → 위치만 갱신
-                                    val heading = if (dist >= MIN_HEADING_DRAG_PX) {
+                                    val isHeadingDrag = dist >= MIN_HEADING_DRAG_PX
+                                    // 짧은 드래그(= tap 의도) 면 손가락 뗀 위치(end) 를 사용 — 사용자 직관 일치.
+                                    // 긴 드래그면 시작점(start) 을 위치, 방향을 heading 으로 사용
+                                    // (start 에서 손가락을 끌어 facing 방향을 가리키는 UX).
+                                    val px = if (isHeadingDrag) start.x else end.x
+                                    val py = if (isHeadingDrag) start.y else end.y
+                                    val sx = bounds.minX + (px / size.width.toDouble()) * rangeX
+                                    val sy = bounds.minY + (py / size.height.toDouble()) * rangeY
+                                    val heading = if (isHeadingDrag) {
                                         Math.toDegrees(atan2(dy, dx))
                                     } else {
                                         null
@@ -272,13 +277,17 @@ private fun FloorplanCanvas(
                 }
             }
 
-            // 드래그 임시 표시
+            // 드래그 임시 표시.
+            // onDragEnd 규약과 일치 — 짧은 드래그(= tap 의도) 면 손가락 현재 위치(de) 에 점을
+            // 표시(= 릴리즈하면 그 자리에 확정). heading 드래그면 시작점(ds) 에 점 + 화살표.
             val ds = dragStartPx
             val de = dragCurPx
             if (ds != null && de != null) {
-                drawCircle(color = Accent.copy(alpha = 0.3f), radius = 16f, center = ds)
-                drawCircle(color = Accent, radius = 8f, center = ds)
-                if (hypot((de.x - ds.x).toDouble(), (de.y - ds.y).toDouble()) >= MIN_HEADING_DRAG_PX) {
+                val isHeadingDrag = hypot((de.x - ds.x).toDouble(), (de.y - ds.y).toDouble()) >= MIN_HEADING_DRAG_PX
+                val previewCenter = if (isHeadingDrag) ds else de
+                drawCircle(color = Accent.copy(alpha = 0.3f), radius = 16f, center = previewCenter)
+                drawCircle(color = Accent, radius = 8f, center = previewCenter)
+                if (isHeadingDrag) {
                     drawArrow(ds, de, Accent, strokeWidth = 3f)
                 }
             }

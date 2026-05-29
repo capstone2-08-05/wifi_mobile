@@ -9,6 +9,7 @@ import com.capstone.mobilemeasure.arcore.ArCoreSessionManager
 import com.capstone.mobilemeasure.arcore.ArPoseSnapshot
 import com.capstone.mobilemeasure.arcore.FloorCalibrationState
 import com.capstone.mobilemeasure.arcore.FloorPositionMapper
+import com.capstone.mobilemeasure.data.MeasurementPurpose
 import com.capstone.mobilemeasure.data.MeasurementSession
 import com.capstone.mobilemeasure.data.RssiSample
 import com.capstone.mobilemeasure.data.remote.NetworkClient
@@ -61,6 +62,7 @@ data class MeasureUiState(
     val sessionCompleted: Boolean = false,
     val lastUploadInfo: String? = null,
     val completionSummary: String? = null,
+    val measurementPurpose: MeasurementPurpose = MeasurementPurpose.CALIBRATION,
     // calibration
     val calibrationInput: CalibrationInputState = CalibrationInputState(),
     val activeCalibration: FloorCalibrationState? = null,
@@ -132,6 +134,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         measureContext = ctx,
                         floorBounds = ctx?.bounds,
                         floorplan = ctx?.floorplan,
+                        measurementPurpose = if (it.isMeasuring) {
+                            it.measurementPurpose
+                        } else {
+                            MeasurementPurpose.fromWireValue(ctx?.recommendedMeasurementPurpose)
+                        },
                     )
                 }
             }
@@ -183,7 +190,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     appendLog(
                         "context ok: project=${ctx.projectId} floor=${ctx.floorId} " +
                             "scene=${ctx.sceneVersionId ?: "-"} asset=${ctx.assetId ?: "-"} " +
-                            "floorplan=${ctx.floorplan.url?.take(50) ?: "-"}"
+                            "floorplan=${ctx.floorplan.url?.take(50) ?: "-"} " +
+                            "purpose=${ctx.recommendedMeasurementPurpose}"
                     )
                     _state.update { it.copy(isFetchingContext = false) }
                 },
@@ -229,6 +237,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ============================================================
     // Calibration 입력
     // ============================================================
+    fun onMeasurementPurposeSelected(purpose: MeasurementPurpose) {
+        if (_state.value.isMeasuring) return
+        _state.update { it.copy(measurementPurpose = purpose) }
+        appendLog("measurement purpose selected: ${purpose.wireValue}")
+    }
+
     fun onCalibrationFieldChange(
         startFloorX: String? = null,
         startFloorY: String? = null,
@@ -303,6 +317,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         val context = ActiveMeasureContext.current
+        val purpose = _state.value.measurementPurpose
         if (context == null) {
             val msg = "측정 시작 불가: QR을 먼저 스캔해 도면 정보를 받아오세요"
             appendLog(msg)
@@ -338,6 +353,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val sessReq = CreateMeasurementSessionRequest(
                 measurementLinkToken = context.token,
                 measurementType = "rssi",
+                measurementPurpose = purpose.wireValue,
                 deviceInfo = DeviceInfoDto(
                     model = Build.MODEL,
                     os = "Android ${Build.VERSION.RELEASE}",
@@ -352,7 +368,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             appendLog(
                 "POST /measurement-sessions (token=${context.token}) " +
                     "cal=start(${"%.2f".format(calibration.startFloorX)}, ${"%.2f".format(calibration.startFloorY)}) " +
-                    "h=${"%.1f".format(calibration.initialHeadingDeg)}"
+                    "h=${"%.1f".format(calibration.initialHeadingDeg)} purpose=${purpose.wireValue}"
             )
 
             repository.createSession(sessReq).fold(
@@ -657,6 +673,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             arTrackingState = pose?.trackingState,
             arConfidence = null,
             stepIndex = step,
+            measurementPurpose = _state.value.measurementPurpose.wireValue,
             metadataJson = metadata,
         )
     }
@@ -757,7 +774,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             onSuccess = { resp ->
                 val summary = "totalPoints=${resp.totalPoints} duration=${resp.durationSeconds}s " +
                     "ap=${resp.apCount} rssi=[${resp.rssiRange.min}..${resp.rssiRange.max} " +
-                    "avg=${resp.rssiRange.avg}] status=${resp.status}"
+                    "avg=${resp.rssiRange.avg}] purpose=${_state.value.measurementPurpose.wireValue} status=${resp.status}"
                 appendLog("complete ok: $summary")
                 ActiveMeasurementSession.markCompleted(resp.status)
                 _state.update {

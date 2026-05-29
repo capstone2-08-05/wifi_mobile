@@ -51,6 +51,7 @@ import com.capstone.mobilemeasure.MeasureUiState
 import com.capstone.mobilemeasure.arcore.ArCameraPreview
 import com.capstone.mobilemeasure.arcore.ArCoreSessionManager
 import com.capstone.mobilemeasure.arcore.findActivity
+import com.capstone.mobilemeasure.data.MeasurementPurpose
 import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
 import com.capstone.mobilemeasure.qr.QrScanner
 
@@ -71,6 +72,7 @@ fun MeasureScreen(
     onStop: () -> Unit,
     onMarkIssue: () -> Unit,
     onUpload: () -> Unit,
+    onPurposeSelected: (MeasurementPurpose) -> Unit,
     onCalibrationFieldChange: (startFloorX: String?, startFloorY: String?, headingDeg: String?) -> Unit,
     onRefreshContext: () -> Unit,
     onCalibrationPickedFromMap: (floorX: Double, floorY: Double, headingDeg: Double?) -> Unit,
@@ -113,6 +115,12 @@ fun MeasureScreen(
 
         ArPreviewCard(arSessionManager = arSessionManager, state = state)
 
+        MeasurementPurposeCard(
+            purpose = state.measurementPurpose,
+            isMeasuring = state.isMeasuring,
+            onPurposeSelected = onPurposeSelected,
+        )
+
         val startPos = state.activeCalibration?.let {
             FloorPositionDto(x = it.startFloorX, y = it.startFloorY, z = it.startFloorZ)
         } ?: run {
@@ -152,6 +160,7 @@ fun MeasureScreen(
 
         ActionRow(
             isMeasuring = state.isMeasuring,
+            purpose = state.measurementPurpose,
             canUpload = state.sessionId != null,
             onStart = onStart,
             onStop = onStop,
@@ -206,6 +215,117 @@ private fun UnsupportedArOverlay() {
             textAlign = TextAlign.Center,
         )
     }
+}
+
+@Composable
+private fun MeasurementPurposeCard(
+    purpose: MeasurementPurpose,
+    isMeasuring: Boolean,
+    onPurposeSelected: (MeasurementPurpose) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (isMeasuring) Color(0xFFEFF6FF) else Color.White,
+        ),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, if (isMeasuring) Accent else DividerGrey),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = if (isMeasuring) "현재 모드: ${purpose.title}" else "측정 목적 선택",
+                color = Ink,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = purpose.description,
+                color = Subdued,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+            )
+            if (!isMeasuring) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    PurposeButton(
+                        purpose = MeasurementPurpose.CALIBRATION,
+                        selected = purpose == MeasurementPurpose.CALIBRATION,
+                        onClick = onPurposeSelected,
+                        modifier = Modifier.weight(1f),
+                    )
+                    PurposeButton(
+                        purpose = MeasurementPurpose.VALIDATION,
+                        selected = purpose == MeasurementPurpose.VALIDATION,
+                        onClick = onPurposeSelected,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                PurposeButton(
+                    purpose = MeasurementPurpose.REFERENCE,
+                    selected = purpose == MeasurementPurpose.REFERENCE,
+                    onClick = onPurposeSelected,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = purposeGuide(purpose),
+                    color = Subdued,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PurposeButton(
+    purpose: MeasurementPurpose,
+    selected: Boolean,
+    onClick: (MeasurementPurpose) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = if (selected) {
+        ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White)
+    } else {
+        ButtonDefaults.outlinedButtonColors(containerColor = Color.White, contentColor = Ink)
+    }
+    val border = if (selected) null else BorderStroke(1.dp, DividerGrey)
+    OutlinedButton(
+        onClick = { onClick(purpose) },
+        colors = colors,
+        border = border,
+        shape = RoundedCornerShape(12.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+        modifier = modifier,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(purpose.shortTitle, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = purpose.wireValue,
+                fontSize = 10.sp,
+                color = if (selected) Color.White.copy(alpha = 0.8f) else Subdued,
+            )
+        }
+    }
+}
+
+private fun purposeGuide(purpose: MeasurementPurpose): String = when (purpose) {
+    MeasurementPurpose.CALIBRATION ->
+        "보정용 측정은 AP 근처, 벽 뒤, 구석 등 신호 차이가 나는 위치를 포함하면 보정 품질이 좋아집니다."
+    MeasurementPurpose.VALIDATION ->
+        "검증용 측정은 보정용 측정과 다른 위치에서 수집하세요. 이 데이터는 보정 계산에 사용하지 않습니다."
+    MeasurementPurpose.REFERENCE ->
+        "참조맵용 측정은 공간 전체의 RSSI 분포를 보기 위한 데이터입니다. 가능하면 골고루 이동하며 수집하세요."
+    MeasurementPurpose.UNKNOWN ->
+        "목적이 없으면 백엔드가 기존 데이터 호환 정책에 따라 처리합니다."
 }
 
 @Composable
@@ -377,6 +497,12 @@ private fun ApiUploadStatusCard(state: MeasureUiState) {
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(text = sessionLabel, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = "측정 목적: ${state.measurementPurpose.title}",
+                color = Accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -385,11 +511,35 @@ private fun ApiUploadStatusCard(state: MeasureUiState) {
                 Text(text = countsLabel, color = Subdued, fontSize = 12.sp)
                 Text(text = statusLabel, color = Subdued, fontSize = 12.sp)
             }
+            Text(
+                text = "수집 포인트: ${state.sampleCount}개 · RSSI 유효 포인트: ${state.serverPointsTotal}개",
+                color = Subdued,
+                fontSize = 11.sp,
+            )
             detailLabel?.let {
                 Text(text = it, color = Subdued, fontSize = 11.sp)
             }
+            if (state.sessionCompleted) {
+                Text(
+                    text = completionPurposeNote(state.measurementPurpose),
+                    color = Subdued,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                )
+            }
         }
     }
+}
+
+private fun completionPurposeNote(purpose: MeasurementPurpose): String = when (purpose) {
+    MeasurementPurpose.CALIBRATION ->
+        "보정용 측정은 시뮬레이션 맵을 실제 공간에 맞게 조정하는 데 사용됩니다."
+    MeasurementPurpose.VALIDATION ->
+        "검증용 측정은 보정 계산에 사용하지 않고, 보정 전/후 예측 오차를 비교하는 데 사용됩니다."
+    MeasurementPurpose.REFERENCE ->
+        "참조맵용 측정은 실측 기반 RSSI 참조맵을 만드는 데 사용됩니다."
+    MeasurementPurpose.UNKNOWN ->
+        "목적 미지정 측정은 백엔드의 기존 데이터 호환 정책에 따라 처리됩니다."
 }
 
 @Composable
@@ -525,6 +675,7 @@ private fun MetricCard(
 @Composable
 private fun ActionRow(
     isMeasuring: Boolean,
+    purpose: MeasurementPurpose,
     canUpload: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -538,7 +689,7 @@ private fun ActionRow(
         if (isMeasuring) {
             StopButton(onClick = onStop, modifier = Modifier.weight(1f))
         } else {
-            StartButton(onClick = onStart, modifier = Modifier.weight(1f))
+            StartButton(purpose = purpose, onClick = onStart, modifier = Modifier.weight(1f))
         }
         UploadButton(enabled = canUpload && !isMeasuring, onClick = onUpload)
     }
@@ -567,7 +718,11 @@ private fun StopButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun StartButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun StartButton(
+    purpose: MeasurementPurpose,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Button(
         onClick = onClick,
         colors = ButtonDefaults.buttonColors(
@@ -578,7 +733,7 @@ private fun StartButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
         elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
         modifier = modifier.height(56.dp),
     ) {
-        Text("측정 시작", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        Text("${purpose.shortTitle} 측정 시작", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
     }
 }
 
@@ -717,6 +872,12 @@ private fun ContextHeader(
                     text = "project=${ctx.projectId.take(8)}… · floor=${ctx.floorId.take(8)}…" +
                         (ctx.sceneVersionId?.let { " · scene=${it.take(8)}…" } ?: "") +
                         (ctx.assetId?.let { " · asset=${it.take(8)}…" } ?: " · asset=∅"),
+                    color = Subdued,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Text(
+                    text = "recommended purpose: ${ctx.recommendedMeasurementPurpose}",
                     color = Subdued,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
