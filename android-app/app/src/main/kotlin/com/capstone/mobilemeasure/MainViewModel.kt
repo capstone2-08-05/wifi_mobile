@@ -1,6 +1,8 @@
 package com.capstone.mobilemeasure
 
 import android.app.Application
+import android.net.Uri
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.capstone.mobilemeasure.arcore.ArCoreSessionManager
@@ -10,10 +12,14 @@ import com.capstone.mobilemeasure.arcore.FloorPositionMapper
 import com.capstone.mobilemeasure.data.MeasurementSession
 import com.capstone.mobilemeasure.data.RssiSample
 import com.capstone.mobilemeasure.data.remote.NetworkClient
+import com.capstone.mobilemeasure.data.remote.dto.CalibrationDto
 import com.capstone.mobilemeasure.data.remote.dto.CompleteMeasurementSessionRequest
+import com.capstone.mobilemeasure.data.remote.dto.CreateMeasurementSessionRequest
+import com.capstone.mobilemeasure.data.remote.dto.DeviceInfoDto
 import com.capstone.mobilemeasure.data.remote.dto.FloorBoundsDto
 import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
 import com.capstone.mobilemeasure.data.remote.dto.FloorplanInfoDto
+import com.capstone.mobilemeasure.data.remote.dto.MeasureContextDto
 import com.capstone.mobilemeasure.data.remote.dto.MeasurementPointDto
 import com.capstone.mobilemeasure.data.remote.dto.UploadMeasurementPointsRequest
 import com.capstone.mobilemeasure.data.repository.MeasurementRepository
@@ -39,12 +45,14 @@ data class CalibrationInputState(
 )
 
 data class MeasureUiState(
+    // wifi/측정
     val isMeasuring: Boolean = false,
     val sessionId: String? = null,
     val sessionFilePath: String? = null,
     val sampleCount: Int = 0,
     val lastSample: RssiSample? = null,
     val recentLogs: List<String> = emptyList(),
+    // backend session/uploads
     val apiSessionId: String? = null,
     val pendingBufferSize: Int = 0,
     val serverPointsTotal: Int = 0,
@@ -53,15 +61,23 @@ data class MeasureUiState(
     val sessionCompleted: Boolean = false,
     val lastUploadInfo: String? = null,
     val completionSummary: String? = null,
+    // calibration
     val calibrationInput: CalibrationInputState = CalibrationInputState(),
     val activeCalibration: FloorCalibrationState? = null,
+    // ARCore
     val arAvailability: ArCoreSessionManager.Availability =
         ArCoreSessionManager.Availability.UNKNOWN,
     val arTrackingState: String? = null,
     val currentFloorPosition: FloorPositionDto? = null,
     val lastUploadedFloorPosition: FloorPositionDto? = null,
+    // context
+    val measureContext: MeasureContextDto? = null,
     val floorBounds: FloorBoundsDto? = null,
     val floorplan: FloorplanInfoDto? = null,
+    val isFetchingContext: Boolean = false,
+    val isCreatingSession: Boolean = false,
+    val errorMessage: String? = null,
+    // bounds
     val isOutOfBounds: Boolean = false,
     val outOfBoundsCount: Int = 0,
 )
@@ -90,14 +106,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var collectJob: Job? = null
     private var poseObserveJob: Job? = null
     private var availabilityObserveJob: Job? = null
+    private var contextObserveJob: Job? = null
     private var scanner: WifiScanner? = null
 
     private val pointBuffer: MutableList<MeasurementPointDto> = mutableListOf()
     private var stepIndex: Int = 0
 
     private var activeApiSessionId: String? = null
-
-    private var contextObserveJob: Job? = null
 
     init {
         availabilityObserveJob = viewModelScope.launch {
@@ -114,6 +129,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ActiveMeasureContext.state.collect { ctx ->
                 _state.update {
                     it.copy(
+                        measureContext = ctx,
                         floorBounds = ctx?.bounds,
                         floorplan = ctx?.floorplan,
                     )
@@ -122,6 +138,97 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ============================================================
+    // QR scan + context 조회
+    // ============================================================
+    fun onScannedToken(rawValue: String) {
+        val token = parseTokenFromQr(rawValue)
+        if (token.isNullOrBlank()) {
+            appendLog("QR 파싱 실패: $rawValue")
+            _state.update { it.copy(errorMessage = "QR에서 token을 찾지 못함: $rawValue") }
+            return
+        }
+        appendLog("QR 스캔: token=$token")
+        fetchContext(token)
+    }
+
+    fun onScanError(message: String) {
+        appendLog("QR 스캔 오류: $message")
+        _state.update { it.copy(errorMessage = "QR 스캔 실패: $message") }
+    }
+
+    fun onScanInstallProgress(message: String) {
+        appendLog("QR: $message")
+    }
+
+    /** Floorplan presigned URL 만료 등으로 재조회가 필요할 때 호출. */
+    fun refreshContext() {
+        val token = ActiveMeasureContext.current?.token
+        if (token.isNullOrBlank()) {
+            appendLog("도면 새로고침: token 없음 — QR을 먼저 스캔하세요")
+            return
+        }
+        fetchContext(token)
+    }
+
+    private fun fetchContext(token: String) {
+        if (_state.value.isFetchingContext) return
+        _state.update { it.copy(isFetchingContext = true, errorMessage = null) }
+        appendLog("GET /measurement-links/$token/context")
+
+        viewModelScope.launch {
+            repository.getContext(token).fold(
+                onSuccess = { ctx ->
+                    ActiveMeasureContext.publish(ctx)
+                    appendLog(
+                        "context ok: project=${ctx.projectId} floor=${ctx.floorId} " +
+                            "scene=${ctx.sceneVersionId ?: "-"} asset=${ctx.assetId ?: "-"} " +
+                            "floorplan=${ctx.floorplan.url?.take(50) ?: "-"}"
+                    )
+                    _state.update { it.copy(isFetchingContext = false) }
+                },
+                onFailure = { err ->
+                    appendLog("context error: ${err.javaClass.simpleName} ${err.message}")
+                    _state.update {
+                        it.copy(
+                            isFetchingContext = false,
+                            errorMessage = "context 조회 실패: ${err.message ?: err.javaClass.simpleName}",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    /**
+     * QR raw 값에서 token 추출. 허용 포맷:
+     *   - 그대로 token 문자열
+     *   - URL 쿼리 `?token=...`
+     *   - URL path 마지막 segment (예: `https://.../measure/<token>`)
+     *   - deep link `mobilemeasure://measure?token=...`
+     */
+    private fun parseTokenFromQr(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+        return try {
+            val uri = Uri.parse(trimmed)
+            val hasScheme = !uri.scheme.isNullOrBlank()
+            val hasHostOrPath = !uri.host.isNullOrBlank() || !uri.path.isNullOrBlank()
+            if (hasScheme && hasHostOrPath) {
+                uri.getQueryParameter("token")?.takeIf { it.isNotBlank() }
+                    ?: uri.lastPathSegment?.takeIf { it.isNotBlank() }
+                    ?: trimmed
+            } else {
+                trimmed
+            }
+        } catch (_: Exception) {
+            trimmed
+        }
+    }
+
+    // ============================================================
+    // Calibration 입력
+    // ============================================================
     fun onCalibrationFieldChange(
         startFloorX: String? = null,
         startFloorY: String? = null,
@@ -137,8 +244,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 ),
             )
         }
-        // 측정 시작 전이라도 Dev 화면에서 session 생성 시 calibration 값을 가져갈 수 있도록
-        // 입력이 valid해질 때마다 draft를 publish 한다. initialAr*은 측정 시작 시점에 갱신됨.
         if (!_state.value.isMeasuring) {
             parseCalibrationInput()?.let { ActiveCalibration.publish(it) }
         }
@@ -178,21 +283,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return d
     }
 
+    // ============================================================
+    // 측정 시작 — context 검증 → backend session 생성 → 수집 시작
+    // ============================================================
     fun startMeasuring() {
         if (_state.value.isMeasuring) return
         if (_state.value.isUploadingPoints || _state.value.isCompleting) {
             appendLog("이전 세션의 업로드/완료 진행 중 — 잠시 후 다시 시도")
             return
         }
+        if (_state.value.isCreatingSession) return
 
         val missing = PermissionHelper.missingPermissions(getApplication())
         if (missing.isNotEmpty()) {
-            appendLog("권한 누락: ${missing.joinToString { it.substringAfterLast('.') }}")
+            val msg = "권한 누락: ${missing.joinToString { it.substringAfterLast('.') }}"
+            appendLog(msg)
+            _state.update { it.copy(errorMessage = msg) }
             return
         }
 
-        val parsedCalibration = parseCalibrationInput() ?: run {
-            appendLog("calibration 입력값을 확인하세요 (숫자 형식)")
+        val context = ActiveMeasureContext.current
+        if (context == null) {
+            val msg = "측정 시작 불가: QR을 먼저 스캔해 도면 정보를 받아오세요"
+            appendLog(msg)
+            _state.update { it.copy(errorMessage = msg) }
+            return
+        }
+
+        val parsedCalibration = parseCalibrationInput()
+        if (parsedCalibration == null) {
+            val msg = "측정 시작 불가: 도면 위에서 시작 위치와 heading을 먼저 지정하세요"
+            appendLog(msg)
+            _state.update { it.copy(errorMessage = msg) }
             return
         }
 
@@ -210,10 +332,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         )
         ActiveCalibration.publish(calibration)
 
+        // 백엔드 measurement session 자동 생성 → 성공 시 RSSI 수집 시작
+        _state.update { it.copy(isCreatingSession = true, errorMessage = null) }
+        viewModelScope.launch {
+            val sessReq = CreateMeasurementSessionRequest(
+                measurementLinkToken = context.token,
+                measurementType = "rssi",
+                deviceInfo = DeviceInfoDto(
+                    model = Build.MODEL,
+                    os = "Android ${Build.VERSION.RELEASE}",
+                    appVersion = BuildConfig.VERSION_NAME,
+                ),
+                calibration = CalibrationDto(
+                    method = "manual_start_point",
+                    startFloorPosition = calibration.toStartFloorPositionDto(),
+                    initialHeadingDeg = calibration.initialHeadingDeg,
+                ),
+            )
+            appendLog(
+                "POST /measurement-sessions (token=${context.token}) " +
+                    "cal=start(${"%.2f".format(calibration.startFloorX)}, ${"%.2f".format(calibration.startFloorY)}) " +
+                    "h=${"%.1f".format(calibration.initialHeadingDeg)}"
+            )
+
+            repository.createSession(sessReq).fold(
+                onSuccess = { sess ->
+                    appendLog("session ok: id=${sess.id} status=${sess.status}")
+                    ActiveMeasurementSession.publish(sess)
+                    activeApiSessionId = sess.id
+                    _state.update { it.copy(isCreatingSession = false) }
+                    beginCollection(calibration, initialPose)
+                },
+                onFailure = { err ->
+                    val msg = "session 생성 실패: ${err.message ?: err.javaClass.simpleName}"
+                    appendLog(msg)
+                    _state.update {
+                        it.copy(isCreatingSession = false, errorMessage = msg)
+                    }
+                },
+            )
+        }
+    }
+
+    private fun beginCollection(
+        calibration: FloorCalibrationState,
+        initialPose: ArPoseSnapshot?,
+    ) {
         val newSession = try {
             MeasurementSession.start(getApplication())
         } catch (e: Exception) {
-            appendLog("Error starting session: ${e.message}")
+            val msg = "로컬 CSV 세션 시작 실패: ${e.message}"
+            appendLog(msg)
+            _state.update { it.copy(errorMessage = msg) }
             return
         }
 
@@ -221,23 +391,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         session = newSession
         scanner = newScanner
 
-        val heldSession = ActiveMeasurementSession.current
-        val apiSession = ActiveMeasurementSession.activeOrNull()
-        activeApiSessionId = apiSession?.id
         pointBuffer.clear()
         stepIndex = 0
-
-        when {
-            heldSession == null ->
-                appendLog("API 세션 없음 — 서버 업로드 비활성, CSV만 저장")
-            apiSession == null ->
-                appendLog(
-                    "API 세션 ${heldSession.id}는 이미 완료됨 — 서버 업로드 비활성, " +
-                        "Dev에서 새 세션을 만들어야 다시 업로드 가능"
-                )
-            else ->
-                appendLog("API 세션 활성: ${apiSession.id} (status=${apiSession.status})")
-        }
 
         appendLog(
             "calibration: start=(${calibration.startFloorX}, ${calibration.startFloorY}) " +
@@ -245,7 +400,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 "initAr=(${"%.3f".format(calibration.initialArX)}, " +
                 "${"%.3f".format(calibration.initialArZ)})"
         )
-        appendLog("session start: ${newSession.sessionId}")
+        appendLog("local session start: ${newSession.sessionId}")
         _state.update {
             it.copy(
                 isMeasuring = true,
@@ -253,7 +408,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 sessionFilePath = newSession.file.absolutePath,
                 sampleCount = 0,
                 lastSample = null,
-                apiSessionId = apiSession?.id,
+                apiSessionId = activeApiSessionId,
                 pendingBufferSize = 0,
                 serverPointsTotal = 0,
                 sessionCompleted = false,
@@ -264,14 +419,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 lastUploadedFloorPosition = null,
                 outOfBoundsCount = 0,
                 isOutOfBounds = false,
+                errorMessage = null,
             )
         }
 
         collectJob = viewModelScope.launch {
             newScanner.scanFlow().collect { samples ->
-                if (samples.isEmpty()) {
-                    return@collect
-                }
+                if (samples.isEmpty()) return@collect
 
                 val cal = ActiveCalibration.current
                 val bounds = _state.value.floorBounds
@@ -357,27 +511,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         appendLog("📍 $tag")
     }
 
-    /** Floorplan presigned URL 만료 등으로 재조회가 필요할 때 호출. */
-    fun refreshContext() {
-        val token = ActiveMeasureContext.current?.token
-        if (token.isNullOrBlank()) {
-            appendLog("도면 새로고침: token 없음 — Dev API에서 Context 조회 필요")
-            return
-        }
-        appendLog("도면 새로고침: GET /measurement-links/$token/context")
-        viewModelScope.launch {
-            repository.getContext(token).fold(
-                onSuccess = { ctx ->
-                    ActiveMeasureContext.publish(ctx)
-                    appendLog("도면 새로고침 ok: url=${ctx.floorplan.url?.take(60) ?: "-"}…")
-                },
-                onFailure = { err ->
-                    appendLog("도면 새로고침 실패: ${err.javaClass.simpleName} ${err.message}")
-                },
-            )
-        }
-    }
-
     fun onUploadRequested() {
         val path = _state.value.sessionFilePath
         if (path == null) {
@@ -404,6 +537,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 completeApiSession(sessionId = sessionId)
             }
         }
+    }
+
+    fun dismissError() {
+        _state.update { it.copy(errorMessage = null) }
     }
 
     override fun onCleared() {
@@ -473,9 +610,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             calibration.toStartFloorPositionDto()
         }
         val mode = if (pose != null) POSITION_MODE_AR else POSITION_MODE_FALLBACK
+        val bounds = _state.value.floorBounds
+        val outside = bounds != null && !FloorPositionMapper.isInsideBounds(floorPos, bounds)
         val metadata: Map<String, Any?> = buildMap {
             put("source", SOURCE_TAG)
             put("position_mode", mode)
+            put("out_of_bounds", outside)
             if (pose != null) {
                 put(
                     "ar_pose",

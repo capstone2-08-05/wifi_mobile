@@ -18,14 +18,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -34,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -45,7 +50,9 @@ import com.capstone.mobilemeasure.CalibrationInputState
 import com.capstone.mobilemeasure.MeasureUiState
 import com.capstone.mobilemeasure.arcore.ArCameraPreview
 import com.capstone.mobilemeasure.arcore.ArCoreSessionManager
+import com.capstone.mobilemeasure.arcore.findActivity
 import com.capstone.mobilemeasure.data.remote.dto.FloorPositionDto
+import com.capstone.mobilemeasure.qr.QrScanner
 
 private val ScreenBg = Color(0xFFF6F7FB)
 private val Highlight = Color(0xFF6FE0C2)
@@ -67,6 +74,10 @@ fun MeasureScreen(
     onCalibrationFieldChange: (startFloorX: String?, startFloorY: String?, headingDeg: String?) -> Unit,
     onRefreshContext: () -> Unit,
     onCalibrationPickedFromMap: (floorX: Double, floorY: Double, headingDeg: Double?) -> Unit,
+    onScannedToken: (String) -> Unit,
+    onScanError: (String) -> Unit,
+    onScanInstallProgress: (String) -> Unit,
+    onDismissError: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -76,6 +87,17 @@ fun MeasureScreen(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        ContextHeader(
+            state = state,
+            onScannedToken = onScannedToken,
+            onScanError = onScanError,
+            onScanInstallProgress = onScanInstallProgress,
+        )
+
+        state.errorMessage?.let { msg ->
+            ErrorBanner(message = msg, onDismiss = onDismissError)
+        }
+
         Text(
             text = if (state.isMeasuring) {
                 "매장을 천천히 걸어다니며 구석구석을\n측정하고 있습니다."
@@ -600,5 +622,151 @@ private fun MarkIssueLink(onClick: () -> Unit) {
             fontWeight = FontWeight.Medium,
             fontSize = 14.sp,
         )
+    }
+}
+
+/** 측정 시작 / 측정 종료 위의 헤더: QR 스캔 버튼 + 받아온 측정 링크 요약. */
+@Composable
+private fun ContextHeader(
+    state: MeasureUiState,
+    onScannedToken: (String) -> Unit,
+    onScanError: (String) -> Unit,
+    onScanInstallProgress: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val ctx = state.measureContext
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, DividerGrey),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (ctx == null) "측정 링크 미연결" else "측정 링크 연결됨",
+                        color = if (ctx == null) Subdued else Ink,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                    )
+                    if (ctx != null) {
+                        Text(
+                            text = "token=${ctx.token}",
+                            color = Subdued,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    } else {
+                        Text(
+                            text = "오른쪽 QR 버튼을 눌러 측정 링크 QR을 스캔하세요.",
+                            color = Subdued,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+                Button(
+                    onClick = {
+                        val activity = context.findActivity()
+                        if (activity == null) {
+                            onScanError("Activity 없음")
+                        } else {
+                            QrScanner.start(
+                                activity = activity,
+                                onResult = onScannedToken,
+                                onError = onScanError,
+                                onInstallProgress = onScanInstallProgress,
+                            )
+                        }
+                    },
+                    enabled = !state.isMeasuring,
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    if (state.isFetchingContext) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.QrCodeScanner,
+                            contentDescription = "QR 스캔",
+                            tint = Color.White,
+                        )
+                    }
+                }
+            }
+
+            if (ctx != null) {
+                Text(
+                    text = "project=${ctx.projectId.take(8)}… · floor=${ctx.floorId.take(8)}…" +
+                        (ctx.sceneVersionId?.let { " · scene=${it.take(8)}…" } ?: "") +
+                        (ctx.assetId?.let { " · asset=${it.take(8)}…" } ?: " · asset=∅"),
+                    color = Subdued,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            if (state.isCreatingSession) {
+                Text(
+                    text = "측정 세션 생성 중…",
+                    color = Accent,
+                    fontSize = 11.sp,
+                )
+            } else if (state.apiSessionId != null) {
+                Text(
+                    text = "API 세션: ${state.apiSessionId}" +
+                        if (state.sessionCompleted) " (완료됨)" else "",
+                    color = Subdued,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = RoseBg),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = message,
+                color = Rose,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "닫기",
+                    tint = Rose,
+                )
+            }
+        }
     }
 }
