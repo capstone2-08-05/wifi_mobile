@@ -125,6 +125,7 @@ private fun AppRoot(viewModel: MainViewModel) {
                     onStop = viewModel::stopMeasuring,
                     onMarkIssue = viewModel::markIssue,
                     onUpload = viewModel::onUploadRequested,
+                    onPurposeSelected = viewModel::onMeasurementPurposeSelected,
                     onCalibrationFieldChange = { x, y, h ->
                         viewModel.onCalibrationFieldChange(
                             startFloorX = x,

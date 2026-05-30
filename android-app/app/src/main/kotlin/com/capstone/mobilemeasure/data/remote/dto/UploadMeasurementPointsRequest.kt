@@ -20,6 +20,9 @@ data class MeasurementPointDto(
     @SerializedName("rssi_dbm")
     val rssiDbm: Double? = null,
 
+    @SerializedName("measurement_purpose")
+    val measurementPurpose: String? = null,
+
     @SerializedName("ap_bssid")
     val apBssid: String? = null,
 
