@@ -31,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -154,7 +155,6 @@ private fun FloorplanCanvas(
 ) {
     val widthPx = floorplan.widthPx ?: 4
     val heightPx = floorplan.heightPx ?: 3
-    val aspect = if (heightPx > 0) widthPx.toFloat() / heightPx.toFloat() else (4f / 3f)
 
     val context = LocalContext.current
     val stableKey = remember(url) { url.substringBefore('?') }
@@ -178,11 +178,14 @@ private fun FloorplanCanvas(
     val rangeX = bounds?.let { it.maxX - it.minX } ?: 0.0
     val rangeY = bounds?.let { it.maxY - it.minY } ?: 0.0
     val hasBounds = bounds != null && rangeX > 0.0 && rangeY > 0.0
+    val imageAspect = if (heightPx > 0) widthPx.toFloat() / heightPx.toFloat() else (4f / 3f)
+    val boundsAspect = if (hasBounds) (rangeX / rangeY).toFloat() else null
+    val aspect = (boundsAspect ?: imageAspect).coerceIn(0.3f, 4f)
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(aspect.coerceIn(0.3f, 4f))
+            .aspectRatio(aspect)
             .clip(RoundedCornerShape(10.dp))
             .background(Color(0xFFF3F4F6))
             .then(
@@ -235,6 +238,7 @@ private fun FloorplanCanvas(
             model = request,
             contentDescription = "floorplan",
             modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.FillBounds,
             onState = { loadState = it },
         )
 

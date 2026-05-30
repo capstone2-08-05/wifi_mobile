@@ -262,18 +262,12 @@ private fun MeasurementPurposeCard(
                         modifier = Modifier.weight(1f),
                     )
                     PurposeButton(
-                        purpose = MeasurementPurpose.VALIDATION,
-                        selected = purpose == MeasurementPurpose.VALIDATION,
+                        purpose = MeasurementPurpose.REFERENCE,
+                        selected = purpose == MeasurementPurpose.REFERENCE,
                         onClick = onPurposeSelected,
                         modifier = Modifier.weight(1f),
                     )
                 }
-                PurposeButton(
-                    purpose = MeasurementPurpose.REFERENCE,
-                    selected = purpose == MeasurementPurpose.REFERENCE,
-                    onClick = onPurposeSelected,
-                    modifier = Modifier.fillMaxWidth(),
-                )
                 Text(
                     text = purposeGuide(purpose),
                     color = Subdued,

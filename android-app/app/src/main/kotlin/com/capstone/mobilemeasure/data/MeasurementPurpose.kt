@@ -34,6 +34,7 @@ enum class MeasurementPurpose(
     companion object {
         fun fromWireValue(value: String?): MeasurementPurpose {
             val normalized = value?.trim()?.lowercase()
+            if (normalized == VALIDATION.wireValue) return REFERENCE
             return entries.firstOrNull { it.wireValue == normalized } ?: CALIBRATION
         }
     }

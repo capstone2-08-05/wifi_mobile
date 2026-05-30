@@ -42,7 +42,7 @@ import java.util.UUID
 data class CalibrationInputState(
     val startFloorX: String = "0.0",
     val startFloorY: String = "0.0",
-    val initialHeadingDeg: String = "0.0",
+    val initialHeadingDeg: String = "",
 )
 
 data class MeasureUiState(
