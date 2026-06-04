@@ -6,13 +6,14 @@ data class RssiSample(
     val bssid: String,
     val rssi: Int,
     val frequencyMhz: Int,
+    val channel: Int? = null,
     val isConnected: Boolean = false,
 ) {
     fun toCsvRow(): String =
-        "$timestampMs,${escape(ssid)},$bssid,$rssi,$frequencyMhz"
+        "$timestampMs,${escape(ssid)},$bssid,$rssi,$frequencyMhz,${channel ?: ""},$isConnected"
 
     companion object {
-        const val CSV_HEADER = "timestampMs,ssid,bssid,rssi,frequencyMhz"
+        const val CSV_HEADER = "timestampMs,ssid,bssid,rssi,frequencyMhz,channel,isConnected"
 
         private fun escape(value: String): String {
             val needsQuote = value.contains(',') || value.contains('"') || value.contains('\n')

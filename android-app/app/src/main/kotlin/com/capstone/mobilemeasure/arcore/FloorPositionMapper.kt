@@ -59,11 +59,14 @@ object FloorPositionMapper {
     ): FloorPositionDto {
         val deltaArX = (arTx - calibration.initialArX).toDouble()
         val deltaArZ = (arTz - calibration.initialArZ).toDouble()
+        val startAxes = startLocalAxes(calibration)
+        val localRight = deltaArX * startAxes.rightX + deltaArZ * startAxes.rightZ
+        val localForward = deltaArX * startAxes.forwardX + deltaArZ * startAxes.forwardZ
         val rad = Math.toRadians(calibration.initialHeadingDeg)
         val cosH = cos(rad)
         val sinH = sin(rad)
-        val dx = -deltaArZ * cosH + deltaArX * -sinH
-        val dy = -deltaArZ * sinH + deltaArX * cosH
+        val dx = localForward * cosH + localRight * -sinH
+        val dy = localForward * sinH + localRight * cosH
         return FloorPositionDto(
             x = calibration.startFloorX + dx,
             y = calibration.startFloorY + dy,
@@ -80,5 +83,65 @@ object FloorPositionMapper {
     fun isInsideBounds(pos: FloorPositionDto, bounds: FloorBoundsDto): Boolean {
         if (bounds.maxX <= bounds.minX || bounds.maxY <= bounds.minY) return true
         return pos.x in bounds.minX..bounds.maxX && pos.y in bounds.minY..bounds.maxY
+    }
+
+    private data class StartAxes(
+        val rightX: Double,
+        val rightZ: Double,
+        val forwardX: Double,
+        val forwardZ: Double,
+    )
+
+    private fun startLocalAxes(calibration: FloorCalibrationState): StartAxes {
+        val right = rotateVector(
+            x = 1.0,
+            y = 0.0,
+            z = 0.0,
+            qx = calibration.initialArQx,
+            qy = calibration.initialArQy,
+            qz = calibration.initialArQz,
+            qw = calibration.initialArQw,
+        )
+        val forward = rotateVector(
+            x = 0.0,
+            y = 0.0,
+            z = -1.0,
+            qx = calibration.initialArQx,
+            qy = calibration.initialArQy,
+            qz = calibration.initialArQz,
+            qw = calibration.initialArQw,
+        )
+        val rightNorm = normalize2d(right.first, right.second) ?: (1.0 to 0.0)
+        val forwardNorm = normalize2d(forward.first, forward.second) ?: (0.0 to -1.0)
+        return StartAxes(
+            rightX = rightNorm.first,
+            rightZ = rightNorm.second,
+            forwardX = forwardNorm.first,
+            forwardZ = forwardNorm.second,
+        )
+    }
+
+    private fun normalize2d(x: Double, z: Double): Pair<Double, Double>? {
+        val len = kotlin.math.hypot(x, z)
+        if (len < 1e-6) return null
+        return x / len to z / len
+    }
+
+    private fun rotateVector(
+        x: Double,
+        y: Double,
+        z: Double,
+        qx: Double,
+        qy: Double,
+        qz: Double,
+        qw: Double,
+    ): Pair<Double, Double> {
+        val ix = qw * x + qy * z - qz * y
+        val iy = qw * y + qz * x - qx * z
+        val iz = qw * z + qx * y - qy * x
+        val iw = -qx * x - qy * y - qz * z
+        val rx = ix * qw + iw * -qx + iy * -qz - iz * -qy
+        val rz = iz * qw + iw * -qz + ix * -qy - iy * -qx
+        return rx to rz
     }
 }

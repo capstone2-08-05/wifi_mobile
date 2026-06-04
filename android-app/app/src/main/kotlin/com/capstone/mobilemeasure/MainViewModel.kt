@@ -113,6 +113,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val pointBuffer: MutableList<MeasurementPointDto> = mutableListOf()
     private var stepIndex: Int = 0
+    private var lastPrimaryBssid: String? = null
 
     private var activeApiSessionId: String? = null
 
@@ -191,6 +192,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         "context ok: project=${ctx.projectId} floor=${ctx.floorId} " +
                             "scene=${ctx.sceneVersionId ?: "-"} asset=${ctx.assetId ?: "-"} " +
                             "floorplan=${ctx.floorplan.url?.take(50) ?: "-"} " +
+                            "aps=${ctx.existingApLayouts.size} " +
+                            "bounds=${ctx.bounds.minX}..${ctx.bounds.maxX},${ctx.bounds.minY}..${ctx.bounds.maxY} " +
                             "purpose=${ctx.recommendedMeasurementPurpose}"
                     )
                     _state.update { it.copy(isFetchingContext = false) }
@@ -318,6 +321,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         val context = ActiveMeasureContext.current
         val purpose = _state.value.measurementPurpose
+
         if (context == null) {
             val msg = "측정 시작 불가: QR을 먼저 스캔해 도면 정보를 받아오세요"
             appendLog(msg)
@@ -344,6 +348,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             initialArX = initialPose?.tx?.toDouble() ?: 0.0,
             initialArY = initialPose?.ty?.toDouble() ?: 0.0,
             initialArZ = initialPose?.tz?.toDouble() ?: 0.0,
+            initialArQx = initialPose?.qx?.toDouble() ?: 0.0,
+            initialArQy = initialPose?.qy?.toDouble() ?: 0.0,
+            initialArQz = initialPose?.qz?.toDouble() ?: 0.0,
+            initialArQw = initialPose?.qw?.toDouble() ?: 1.0,
         )
         ActiveCalibration.publish(calibration)
 
@@ -382,6 +390,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 onFailure = { err ->
                     val msg = "session 생성 실패: ${err.message ?: err.javaClass.simpleName}"
                     appendLog(msg)
+                    activeApiSessionId = null
                     _state.update {
                         it.copy(isCreatingSession = false, errorMessage = msg)
                     }
@@ -409,6 +418,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         pointBuffer.clear()
         stepIndex = 0
+        lastPrimaryBssid = null
 
         appendLog(
             "calibration: start=(${calibration.startFloorX}, ${calibration.startFloorY}) " +
@@ -446,17 +456,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val cal = ActiveCalibration.current
                 val bounds = _state.value.floorBounds
                 var oobAdded = 0
-                samples.forEach { sample ->
+                val scanStep = stepIndex++
+                val strongest = samples.maxByOrNull { it.rssi } ?: return@collect
+                val primary = samples.firstOrNull { it.isConnected } ?: strongest
+                val previousPrimaryBssid = lastPrimaryBssid
+                val primaryChanged =
+                    previousPrimaryBssid != null &&
+                        previousPrimaryBssid.lowercase() != primary.bssid.lowercase()
+                val selectedSamples = buildList {
+                    if (primaryChanged) {
+                        samples.firstOrNull {
+                            it.bssid.equals(previousPrimaryBssid, ignoreCase = true)
+                        }?.let { add(it) }
+                    }
+                    add(primary)
+                }.distinctBy { it.bssid.lowercase() }
+
+                selectedSamples.forEachIndexed { selectedIndex, sample ->
                     newSession.append(sample)
                     if (activeApiSessionId != null && cal != null) {
                         val pose = arSessionManager.latestPose.value
-                        val dto = buildPointDto(sample, cal, pose, stepIndex++)
+                        val dto = buildPointDto(
+                            sample = sample,
+                            calibration = cal,
+                            pose = pose,
+                            step = scanStep,
+                            scanSize = samples.size,
+                            scanRank = samples.indexOfFirst {
+                                it.bssid.equals(sample.bssid, ignoreCase = true)
+                            }.takeIf { it >= 0 }?.plus(1) ?: selectedIndex + 1,
+                            selectedPrimaryBssid = primary.bssid,
+                            strongestBssid = strongest.bssid,
+                            previousPrimaryBssid = previousPrimaryBssid,
+                            primaryChanged = primaryChanged,
+                            uploadRole = if (
+                                sample.bssid.equals(primary.bssid, ignoreCase = true)
+                            ) {
+                                if (primary.isConnected) "connected" else "strongest_fallback"
+                            } else {
+                                "previous_connected"
+                            },
+                        )
                         if (bounds != null && !FloorPositionMapper.isInsideBounds(dto.floorPosition, bounds)) {
                             oobAdded += 1
                         }
                         pointBuffer.add(dto)
                     }
                 }
+                lastPrimaryBssid = primary.bssid
                 if (oobAdded > 0) {
                     appendLog(
                         "⚠ bounds 밖 point $oobAdded 개 — pos=" +
@@ -469,16 +516,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         it.copy(outOfBoundsCount = it.outOfBoundsCount + oobAdded)
                     }
                 }
-                val last = samples.last()
                 appendLog(
-                    "rssi=${last.rssi}dBm ssid=${last.ssid} bssid=${last.bssid} " +
-                        "freq=${last.frequencyMhz}MHz csv=${newSession.totalSamples} " +
+                    "aps=${samples.size} primary=${primary.rssi}dBm ssid=${primary.ssid} bssid=${primary.bssid} " +
+                        "mode=${if (primary.isConnected) "connected" else "strongest_fallback"} " +
+                        "strongest=${strongest.rssi}dBm/${strongest.bssid} " +
+                        "selected=${selectedSamples.size}" +
+                        (if (primaryChanged) " switched_from=$previousPrimaryBssid" else "") + " " +
+                        "freq=${primary.frequencyMhz}MHz csv=${newSession.totalSamples} " +
                         "buffer=${pointBuffer.size}"
                 )
                 _state.update {
                     it.copy(
                         sampleCount = newSession.totalSamples,
-                        lastSample = last,
+                        lastSample = primary,
                         pendingBufferSize = pointBuffer.size,
                     )
                 }
@@ -619,6 +669,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         calibration: FloorCalibrationState,
         pose: ArPoseSnapshot?,
         step: Int,
+        scanSize: Int = 1,
+        scanRank: Int = 1,
+        selectedPrimaryBssid: String? = null,
+        strongestBssid: String? = null,
+        previousPrimaryBssid: String? = null,
+        primaryChanged: Boolean = false,
+        uploadRole: String = "connected",
     ): MeasurementPointDto {
         val floorPos = if (pose != null) {
             FloorPositionMapper.map(calibration, pose)
@@ -632,6 +689,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             put("source", SOURCE_TAG)
             put("position_mode", mode)
             put("out_of_bounds", outside)
+            put("scan_size", scanSize)
+            put("scan_rank", scanRank)
+            put("scan_filter", mapOf("mode" to "connected_priority", "min_rssi_dbm" to -85))
+            put("selected_primary_bssid", selectedPrimaryBssid)
+            put("strongest_bssid", strongestBssid)
+            put("previous_primary_bssid", previousPrimaryBssid)
+            put("primary_changed", primaryChanged)
+            put("upload_role", uploadRole)
+            put("is_connected_bssid", sample.isConnected)
             if (pose != null) {
                 put(
                     "ar_pose",
@@ -658,6 +724,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     "initial_ar_x" to calibration.initialArX,
                     "initial_ar_y" to calibration.initialArY,
                     "initial_ar_z" to calibration.initialArZ,
+                    "initial_ar_qx" to calibration.initialArQx,
+                    "initial_ar_qy" to calibration.initialArQy,
+                    "initial_ar_qz" to calibration.initialArQz,
+                    "initial_ar_qw" to calibration.initialArQw,
                 ),
             )
         }
@@ -667,7 +737,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             rssiDbm = sample.rssi.toDouble(),
             apBssid = sample.bssid,
             apSsid = sample.ssid,
-            channel = null,
+            channel = sample.channel,
             frequencyMhz = sample.frequencyMhz,
             timestampAtPoint = Instant.ofEpochMilli(sample.timestampMs).toString(),
             arTrackingState = pose?.trackingState,

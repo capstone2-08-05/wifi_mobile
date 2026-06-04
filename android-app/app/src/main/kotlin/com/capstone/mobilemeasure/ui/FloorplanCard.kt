@@ -72,6 +72,7 @@ private val Rose = Color(0xFFE53E5C)
 fun FloorplanCard(
     floorplan: FloorplanInfoDto?,
     bounds: FloorBoundsDto?,
+    existingApLayouts: List<Map<String, Any?>>,
     currentPosition: FloorPositionDto?,
     startPosition: FloorPositionDto?,
     headingDeg: Double?,
@@ -119,6 +120,7 @@ fun FloorplanCard(
                     url = url,
                     floorplan = floorplan,
                     bounds = bounds,
+                    existingApLayouts = existingApLayouts,
                     currentPosition = currentPosition,
                     startPosition = startPosition,
                     headingDeg = headingDeg,
@@ -134,7 +136,11 @@ fun FloorplanCard(
                         fontSize = 11.sp,
                     )
                 }
-                FloorplanMeta(floorplan = floorplan, bounds = bounds)
+                FloorplanMeta(
+                    floorplan = floorplan,
+                    bounds = bounds,
+                    apCount = existingApLayouts.size,
+                )
             }
         }
     }
@@ -145,6 +151,7 @@ private fun FloorplanCanvas(
     url: String,
     floorplan: FloorplanInfoDto,
     bounds: FloorBoundsDto?,
+    existingApLayouts: List<Map<String, Any?>>,
     currentPosition: FloorPositionDto?,
     startPosition: FloorPositionDto?,
     headingDeg: Double?,
@@ -265,6 +272,17 @@ private fun FloorplanCanvas(
             }
 
             // 확정된 시작 위치 + heading 화살표
+            existingApLayouts.forEach { ap ->
+                val x = apNumber(ap, "x_m")
+                val y = apNumber(ap, "y_m")
+                if (x != null && y != null) {
+                    val o = toCanvas(FloorPositionDto(x = x, y = y, z = 1.2))
+                    drawCircle(color = Accent.copy(alpha = 0.24f), radius = 18f, center = o)
+                    drawCircle(color = Accent, radius = 9f, center = o)
+                    drawCircle(color = Color.White, radius = 3.5f, center = o)
+                }
+            }
+
             startPosition?.let { s ->
                 val o = toCanvas(s)
                 drawCircle(color = Color(0x80000000), radius = 10f, center = o)
@@ -380,12 +398,17 @@ private fun ImageErrorOverlay(reason: String, onRefresh: () -> Unit) {
 }
 
 @Composable
-private fun FloorplanMeta(floorplan: FloorplanInfoDto, bounds: FloorBoundsDto?) {
+private fun FloorplanMeta(
+    floorplan: FloorplanInfoDto,
+    bounds: FloorBoundsDto?,
+    apCount: Int,
+) {
     val parts = buildList {
         floorplan.widthPx?.let { add("${it}px") }
         floorplan.heightPx?.let { add("${it}px") }
         floorplan.scaleMPerPx?.let { add("${"%.4f".format(it)} m/px") }
         bounds?.let { add("bounds ${"%.1f".format(it.maxX - it.minX)}×${"%.1f".format(it.maxY - it.minY)} m") }
+        add("AP $apCount")
     }
     if (parts.isNotEmpty()) {
         Text(
@@ -417,3 +440,12 @@ private fun EmptyState(message: String) {
 }
 
 private const val MIN_HEADING_DRAG_PX = 24.0
+
+private fun apNumber(ap: Map<String, Any?>, key: String): Double? {
+    val value = ap[key] ?: return null
+    return when (value) {
+        is Number -> value.toDouble()
+        is String -> value.toDoubleOrNull()
+        else -> null
+    }
+}

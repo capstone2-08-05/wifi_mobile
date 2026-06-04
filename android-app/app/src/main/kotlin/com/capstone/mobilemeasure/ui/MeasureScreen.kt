@@ -134,7 +134,8 @@ fun MeasureScreen(
         FloorplanCard(
             floorplan = state.floorplan,
             bounds = state.floorBounds,
-            currentPosition = state.currentFloorPosition,
+            existingApLayouts = state.measureContext?.existingApLayouts.orEmpty(),
+            currentPosition = state.currentFloorPosition ?: startPos,
             startPosition = startPos,
             headingDeg = headingDeg,
             isOutOfBounds = state.isOutOfBounds,

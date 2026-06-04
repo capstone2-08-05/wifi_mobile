@@ -18,6 +18,11 @@ data class FloorCalibrationState(
     val initialArX: Double,
     val initialArY: Double,
     val initialArZ: Double,
+    /** Camera rotation at measurement start. */
+    val initialArQx: Double = 0.0,
+    val initialArQy: Double = 0.0,
+    val initialArQz: Double = 0.0,
+    val initialArQw: Double = 1.0,
 ) {
     fun toStartFloorPositionDto(): FloorPositionDto =
         FloorPositionDto(x = startFloorX, y = startFloorY, z = startFloorZ)
