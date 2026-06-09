@@ -31,7 +31,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -186,8 +185,7 @@ private fun FloorplanCanvas(
     val rangeY = bounds?.let { it.maxY - it.minY } ?: 0.0
     val hasBounds = bounds != null && rangeX > 0.0 && rangeY > 0.0
     val imageAspect = if (heightPx > 0) widthPx.toFloat() / heightPx.toFloat() else (4f / 3f)
-    val boundsAspect = if (hasBounds) (rangeX / rangeY).toFloat() else null
-    val aspect = (boundsAspect ?: imageAspect).coerceIn(0.3f, 4f)
+    val aspect = imageAspect.coerceIn(0.3f, 4f)
 
     Box(
         modifier = Modifier
@@ -245,7 +243,6 @@ private fun FloorplanCanvas(
             model = request,
             contentDescription = "floorplan",
             modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.FillBounds,
             onState = { loadState = it },
         )
 

@@ -14,7 +14,7 @@ val localProperties = Properties().apply {
 
 val apiBaseUrl: String = localProperties.getProperty("API_BASE_URL")
     ?: System.getenv("API_BASE_URL")
-    ?: "http://3.34.1.198:8000/"
+    ?: "http://43.201.65.6:8000/"
 
 android {
     namespace = "com.capstone.mobilemeasure"
