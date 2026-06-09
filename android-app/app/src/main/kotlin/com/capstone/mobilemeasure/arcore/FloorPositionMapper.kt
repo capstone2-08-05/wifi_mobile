@@ -93,15 +93,6 @@ object FloorPositionMapper {
     )
 
     private fun startLocalAxes(calibration: FloorCalibrationState): StartAxes {
-        val right = rotateVector(
-            x = 1.0,
-            y = 0.0,
-            z = 0.0,
-            qx = calibration.initialArQx,
-            qy = calibration.initialArQy,
-            qz = calibration.initialArQz,
-            qw = calibration.initialArQw,
-        )
         val forward = rotateVector(
             x = 0.0,
             y = 0.0,
@@ -111,8 +102,8 @@ object FloorPositionMapper {
             qz = calibration.initialArQz,
             qw = calibration.initialArQw,
         )
-        val rightNorm = normalize2d(right.first, right.second) ?: (1.0 to 0.0)
         val forwardNorm = normalize2d(forward.first, forward.second) ?: (0.0 to -1.0)
+        val rightNorm = -forwardNorm.second to forwardNorm.first
         return StartAxes(
             rightX = rightNorm.first,
             rightZ = rightNorm.second,
